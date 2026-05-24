@@ -1,0 +1,17 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables (Sensitive Credentials)
+.env
+.env.*
+
+# Local Database & User State files
+vdu_scanner/watchlist.csv
+*.csv
+
+# OS metadata
+.DS_Store
+Thumbs.db
