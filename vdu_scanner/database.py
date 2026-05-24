@@ -321,10 +321,20 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         """
         for r in breakouts:
             cur.execute(insert_breakout_query, (
-                r['symbol'], r['company_name'], r['cmp'], r['day_change_pct'], r['today_volume'],
-                r['dry_avg_vol'], r['volume_ratio'], r['dry_days_count'], r['dry_spikes'],
-                r['market_cap_cr'], r['signal_strength'], r['above_50dma'],
-                r['dry_start_date'].strftime("%Y-%m-%d"), r['dry_end_date'].strftime("%Y-%m-%d"),
+                str(r['symbol']), 
+                str(r['company_name']) if r['company_name'] else "", 
+                float(r['cmp']), 
+                float(r['day_change_pct']), 
+                int(r['today_volume']),
+                float(r['dry_avg_vol']), 
+                float(r['volume_ratio']), 
+                int(r['dry_days_count']), 
+                int(r['dry_spikes']),
+                float(r['market_cap_cr']), 
+                float(r['signal_strength']), 
+                bool(r['above_50dma']),
+                r['dry_start_date'].strftime("%Y-%m-%d") if hasattr(r['dry_start_date'], 'strftime') else str(r['dry_start_date']), 
+                r['dry_end_date'].strftime("%Y-%m-%d") if hasattr(r['dry_end_date'], 'strftime') else str(r['dry_end_date']),
                 date_str
             ))
             
@@ -336,8 +346,15 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         """
         for r in squeezes:
             cur.execute(insert_squeeze_query, (
-                r['symbol'], r['company_name'], r['cmp'], r['range_5d'], r['range_prev'],
-                r['vol_ratio'], r['squeeze_score'], r['market_cap_cr'], date_str
+                str(r['symbol']), 
+                str(r['company_name']) if r['company_name'] else "", 
+                float(r['cmp']), 
+                float(r['range_5d']), 
+                float(r['range_prev']),
+                float(r['vol_ratio']), 
+                float(r['squeeze_score']), 
+                float(r['market_cap_cr']), 
+                date_str
             ))
             
         # 4. Insert execution log

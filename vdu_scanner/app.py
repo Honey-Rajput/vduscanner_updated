@@ -43,6 +43,10 @@ if 'last_scanned' not in st.session_state:
     st.session_state.last_scanned = None
 if 'confirm_clear' not in st.session_state:
     st.session_state.confirm_clear = False
+if 'ai_selected_stock' not in st.session_state:
+    st.session_state.ai_selected_stock = ""
+if 'ai_custom_sym_input' not in st.session_state:
+    st.session_state.ai_custom_sym_input = ""
 if 'coiled_results' not in st.session_state:
     st.session_state.coiled_results = None
 
@@ -896,16 +900,20 @@ with tab_ai:
     col_s1, col_s2 = st.columns([3, 1])
     
     # Initialize selector defaults from session state if set by the dashboard load click
+    options_list = [""] + available_tickers + ["Custom Ticker (Type Manual)"]
     default_sel_idx = 0
-    if st.session_state.get("ai_stock_selection_box") == "Custom Ticker (Type Manual)":
-        default_sel_idx = len(available_tickers) + 1 if available_tickers else 1
+    if st.session_state.ai_selected_stock in options_list:
+        default_sel_idx = options_list.index(st.session_state.ai_selected_stock)
         
     ai_selection = col_s1.selectbox(
         "Select Stock to Analyze:",
-        options=[""] + available_tickers + ["Custom Ticker (Type Manual)"],
-        index=default_sel_idx,
-        key="ai_stock_selection_box"
+        options=options_list,
+        index=default_sel_idx
     )
+    
+    if ai_selection != st.session_state.ai_selected_stock:
+        st.session_state.ai_selected_stock = ai_selection
+        st.rerun()
 
     custom_ai_sym = ""
     if ai_selection == "Custom Ticker (Type Manual)":
@@ -1257,7 +1265,7 @@ with tab_ai:
             # Action button to select this ticker inside selector
             action_key = f"dash_load_{sym}_{displayed_rows}"
             if row_cols[6].button("🔍 View", key=action_key, use_container_width=True):
-                st.session_state.ai_stock_selection_box = "Custom Ticker (Type Manual)"
+                st.session_state.ai_selected_stock = "Custom Ticker (Type Manual)"
                 st.session_state.ai_custom_sym_input = sym
                 st.toast(f"🔍 Loading detailed charts & AI context for {sym}...")
                 st.rerun()
@@ -1315,7 +1323,7 @@ with tab_ai:
             # Action button to load this symbol's cached analysis
             if row_cols[5].button("⚡ Load", key=f"load_rec_{rec['symbol']}_{idx}", use_container_width=True):
                 # Set session state options to trigger the analysis box for this symbol
-                st.session_state.ai_stock_selection_box = "Custom Ticker (Type Manual)"
+                st.session_state.ai_selected_stock = "Custom Ticker (Type Manual)"
                 st.toast(f"Loading cached analysis for {rec['symbol']}!")
                 st.session_state.ai_custom_sym_input = rec['symbol']
                 st.rerun()
