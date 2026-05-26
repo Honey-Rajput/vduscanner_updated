@@ -125,9 +125,26 @@ COMPANY_NAME_MAP = {
     "ZOMATO": "Zomato Ltd."
 }
 
+# Global cache for company names to prevent redundant imports
+_DYNAMIC_COMPANY_NAME_MAP = None
+
 def get_company_name(symbol):
     """
     Returns clean company name or falls back to symbol
     """
-    base_sym = symbol.replace(".NS", "").upper()
+    global _DYNAMIC_COMPANY_NAME_MAP
+    base_sym = symbol.replace(".NS", "").upper().strip()
+    
+    if _DYNAMIC_COMPANY_NAME_MAP is None:
+        try:
+            from data_fetcher import fetch_nse_company_names
+            _DYNAMIC_COMPANY_NAME_MAP = fetch_nse_company_names()
+        except Exception as err:
+            print(f"Failed to fetch dynamic company names: {err}")
+            _DYNAMIC_COMPANY_NAME_MAP = {}
+            
+    if _DYNAMIC_COMPANY_NAME_MAP and base_sym in _DYNAMIC_COMPANY_NAME_MAP:
+        return _DYNAMIC_COMPANY_NAME_MAP[base_sym]
+        
     return COMPANY_NAME_MAP.get(base_sym, f"{base_sym} India")
+

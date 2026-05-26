@@ -18,7 +18,7 @@ def get_connection():
     """
     if not DATABASE_URL:
         raise ValueError("Database_URL is not set in the environment or .env file.")
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL, connect_timeout=3)
 
 def init_db() -> bool:
     """
@@ -108,6 +108,19 @@ def init_db() -> bool:
         );
         """,
         """
+        CREATE TABLE IF NOT EXISTS scanned_wt_cross (
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR(20) NOT NULL,
+            company_name VARCHAR(200),
+            cmp DOUBLE PRECISION,
+            day_change_pct DOUBLE PRECISION,
+            wt_value DOUBLE PRECISION,
+            scan_date DATE NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, scan_date)
+        );
+        """,
+        """
         CREATE TABLE IF NOT EXISTS scan_logs (
             scan_date DATE PRIMARY KEY,
             total_scanned INT NOT NULL,
@@ -124,9 +137,49 @@ def init_db() -> bool:
         cur = conn.cursor()
         for q in queries:
             cur.execute(q)
+            
+        # Safely migrate existing tables if columns are missing
+        migrations = [
+            "ALTER TABLE scanned_breakouts ADD COLUMN IF NOT EXISTS buy_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_breakouts ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_breakouts ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_breakouts ADD COLUMN IF NOT EXISTS confidence VARCHAR(50);",
+            "ALTER TABLE scanned_breakouts ADD COLUMN IF NOT EXISTS recommendation TEXT;",
+            
+            "ALTER TABLE scanned_squeezes ADD COLUMN IF NOT EXISTS buy_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_squeezes ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_squeezes ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_squeezes ADD COLUMN IF NOT EXISTS confidence VARCHAR(50);",
+            "ALTER TABLE scanned_squeezes ADD COLUMN IF NOT EXISTS recommendation TEXT;",
+            
+            "ALTER TABLE scanned_gapups ADD COLUMN IF NOT EXISTS buy_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_gapups ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_gapups ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_gapups ADD COLUMN IF NOT EXISTS confidence VARCHAR(50);",
+            "ALTER TABLE scanned_gapups ADD COLUMN IF NOT EXISTS recommendation TEXT;",
+            
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS buy_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS confidence VARCHAR(50);",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS recommendation TEXT;",
+            
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS buy_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS confidence VARCHAR(50);",
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS recommendation TEXT;"
+        ]
+        for m in migrations:
+            try:
+                cur.execute(m)
+            except Exception as mig_ex:
+                print(f"Migration column note/error: {mig_ex}")
+                conn.rollback() # in case statement fails, rollback transaction so we can continue
+                
         conn.commit()
         cur.close()
-        print("Database initialized successfully.")
+        print("Database initialized and migrated successfully.")
         return True
     except Exception as e:
         print(f"Error initializing PostgreSQL database: {e}")
@@ -264,6 +317,28 @@ def has_scanned_today(date_str: str) -> dict | None:
         if conn:
             conn.close()
 
+def get_available_scan_dates() -> list[str]:
+    """
+    Retrieves all dates that have completed daily scan logs, sorted descending.
+    """
+    query = "SELECT DISTINCT scan_date FROM scan_logs ORDER BY scan_date DESC;"
+    conn = None
+    dates = []
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(query)
+        rows = cur.fetchall()
+        cur.close()
+        dates = [r[0].strftime("%Y-%m-%d") if hasattr(r[0], 'strftime') else str(r[0]) for r in rows]
+    except Exception as e:
+        print(f"Error loading scan dates from database: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return dates
+
+
 def get_cached_breakouts(date_str: str) -> list[dict]:
     """
     Retrieves the cached VDU breakouts scanned on a specific date.
@@ -271,7 +346,8 @@ def get_cached_breakouts(date_str: str) -> list[dict]:
     query = """
     SELECT symbol, company_name, cmp, day_change_pct, today_volume, dry_avg_vol, 
            volume_ratio, dry_days_count, dry_spikes, market_cap_cr, signal_strength, 
-           above_50dma, dry_start_date, dry_end_date, scan_date
+           above_50dma, dry_start_date, dry_end_date, scan_date,
+           buy_price, exit_price, target_price, confidence, recommendation
     FROM scanned_breakouts
     WHERE scan_date = %s;
     """
@@ -302,7 +378,8 @@ def get_cached_squeezes(date_str: str) -> list[dict]:
     """
     query = """
     SELECT symbol, company_name, cmp, range_5d, range_prev, vol_ratio, 
-           squeeze_score, market_cap_cr, scan_date
+           squeeze_score, market_cap_cr, scan_date,
+           buy_price, exit_price, target_price, confidence, recommendation
     FROM scanned_squeezes
     WHERE scan_date = %s;
     """
@@ -330,7 +407,8 @@ def get_cached_gapups(date_str: str) -> list[dict]:
     Retrieves the cached Gap-Up setups scanned on a specific date.
     """
     query = """
-    SELECT symbol, company_name, prev_close, open_price, cmp, gap_pct, volume, day_change_pct, scan_date
+    SELECT symbol, company_name, prev_close, open_price, cmp, gap_pct, volume, day_change_pct, scan_date,
+           buy_price, exit_price, target_price, confidence, recommendation
     FROM scanned_gapups
     WHERE scan_date = %s;
     """
@@ -358,7 +436,8 @@ def get_cached_trend_setups(date_str: str, setup_type: str) -> list[dict]:
     Retrieves the cached technical trend setups scanned on a specific date for a setup_type.
     """
     query = """
-    SELECT symbol, company_name, cmp, day_change_pct, setup_type, scan_date
+    SELECT symbol, company_name, cmp, day_change_pct, setup_type, scan_date,
+           buy_price, exit_price, target_price, confidence, recommendation
     FROM scanned_trend_setups
     WHERE scan_date = %s AND setup_type = %s;
     """
@@ -381,7 +460,36 @@ def get_cached_trend_setups(date_str: str, setup_type: str) -> list[dict]:
             conn.close()
     return results
 
-def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict], gapups: list[dict], trend_setups: list[dict], total_scanned: int) -> bool:
+def get_cached_wt_cross(date_str: str) -> list[dict]:
+    """
+    Retrieves the cached WT Cross setups scanned on a specific date.
+    """
+    query = """
+    SELECT symbol, company_name, cmp, day_change_pct, wt_value, scan_date,
+           buy_price, exit_price, target_price, confidence, recommendation
+    FROM scanned_wt_cross
+    WHERE scan_date = %s;
+    """
+    conn = None
+    results = []
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(query, (date_str,))
+        rows = cur.fetchall()
+        cur.close()
+        for r in rows:
+            r_dict = dict(r)
+            r_dict['scan_date'] = r_dict['scan_date'].strftime("%Y-%m-%d")
+            results.append(r_dict)
+    except Exception as e:
+        print(f"Error loading cached WT Cross from database: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return results
+
+def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict], gapups: list[dict], trend_setups: list[dict], wt_cross: list[dict], total_scanned: int) -> bool:
     """
     Saves the full market scan results and logs the completion.
     Uses clean transactions to perform daily upsert overrides.
@@ -396,6 +504,7 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         cur.execute("DELETE FROM scanned_squeezes WHERE scan_date = %s;", (date_str,))
         cur.execute("DELETE FROM scanned_gapups WHERE scan_date = %s;", (date_str,))
         cur.execute("DELETE FROM scanned_trend_setups WHERE scan_date = %s;", (date_str,))
+        cur.execute("DELETE FROM scanned_wt_cross WHERE scan_date = %s;", (date_str,))
         cur.execute("DELETE FROM scan_logs WHERE scan_date = %s;", (date_str,))
         
         # 2. Insert new breakouts
@@ -403,8 +512,9 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         INSERT INTO scanned_breakouts (symbol, company_name, cmp, day_change_pct, today_volume, 
                                       dry_avg_vol, volume_ratio, dry_days_count, dry_spikes, 
                                       market_cap_cr, signal_strength, above_50dma, dry_start_date, 
-                                      dry_end_date, scan_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                      dry_end_date, scan_date, buy_price, exit_price, target_price, 
+                                      confidence, recommendation)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in breakouts:
             cur.execute(insert_breakout_query, (
@@ -422,14 +532,20 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 bool(r['above_50dma']),
                 r['dry_start_date'].strftime("%Y-%m-%d") if hasattr(r['dry_start_date'], 'strftime') else str(r['dry_start_date']), 
                 r['dry_end_date'].strftime("%Y-%m-%d") if hasattr(r['dry_end_date'], 'strftime') else str(r['dry_end_date']),
-                date_str
+                date_str,
+                float(r['buy_price']) if r.get('buy_price') is not None else None,
+                float(r['exit_price']) if r.get('exit_price') is not None else None,
+                float(r['target_price']) if r.get('target_price') is not None else None,
+                str(r['confidence']) if r.get('confidence') is not None else None,
+                str(r['recommendation']) if r.get('recommendation') is not None else None
             ))
             
         # 3. Insert new squeezes
         insert_squeeze_query = """
         INSERT INTO scanned_squeezes (symbol, company_name, cmp, range_5d, range_prev, 
-                                     vol_ratio, squeeze_score, market_cap_cr, scan_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                     vol_ratio, squeeze_score, market_cap_cr, scan_date,
+                                     buy_price, exit_price, target_price, confidence, recommendation)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in squeezes:
             cur.execute(insert_squeeze_query, (
@@ -441,13 +557,20 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 float(r['vol_ratio']), 
                 float(r['squeeze_score']), 
                 float(r['market_cap_cr']), 
-                date_str
+                date_str,
+                float(r['buy_price']) if r.get('buy_price') is not None else None,
+                float(r['exit_price']) if r.get('exit_price') is not None else None,
+                float(r['target_price']) if r.get('target_price') is not None else None,
+                str(r['confidence']) if r.get('confidence') is not None else None,
+                str(r['recommendation']) if r.get('recommendation') is not None else None
             ))
             
         # 3.5. Insert new gapups
         insert_gapup_query = """
-        INSERT INTO scanned_gapups (symbol, company_name, prev_close, open_price, cmp, gap_pct, volume, day_change_pct, scan_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+        INSERT INTO scanned_gapups (symbol, company_name, prev_close, open_price, cmp, gap_pct, volume, 
+                                   day_change_pct, scan_date, buy_price, exit_price, target_price, 
+                                   confidence, recommendation)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in gapups:
             cur.execute(insert_gapup_query, (
@@ -459,13 +582,19 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 float(r['gap_pct']),
                 int(r['volume']), 
                 float(r['day_change_pct']), 
-                date_str
+                date_str,
+                float(r['buy_price']) if r.get('buy_price') is not None else None,
+                float(r['exit_price']) if r.get('exit_price') is not None else None,
+                float(r['target_price']) if r.get('target_price') is not None else None,
+                str(r['confidence']) if r.get('confidence') is not None else None,
+                str(r['recommendation']) if r.get('recommendation') is not None else None
             ))
             
         # 3.8. Insert new trend setups (above_ma, support_ma, crossover_ma)
         insert_trend_query = """
-        INSERT INTO scanned_trend_setups (symbol, company_name, cmp, day_change_pct, setup_type, scan_date)
-        VALUES (%s, %s, %s, %s, %s, %s);
+        INSERT INTO scanned_trend_setups (symbol, company_name, cmp, day_change_pct, setup_type, scan_date,
+                                         buy_price, exit_price, target_price, confidence, recommendation)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in trend_setups:
             cur.execute(insert_trend_query, (
@@ -474,7 +603,33 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 float(r['cmp']),
                 float(r['day_change_pct']),
                 str(r['setup_type']),
-                date_str
+                date_str,
+                float(r['buy_price']) if r.get('buy_price') is not None else None,
+                float(r['exit_price']) if r.get('exit_price') is not None else None,
+                float(r['target_price']) if r.get('target_price') is not None else None,
+                str(r['confidence']) if r.get('confidence') is not None else None,
+                str(r['recommendation']) if r.get('recommendation') is not None else None
+            ))
+ 
+        # 3.9. Insert new WT Cross setups
+        insert_wt_query = """
+        INSERT INTO scanned_wt_cross (symbol, company_name, cmp, day_change_pct, wt_value, scan_date,
+                                     buy_price, exit_price, target_price, confidence, recommendation)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+        for r in wt_cross:
+            cur.execute(insert_wt_query, (
+                str(r['symbol']),
+                str(r['company_name']) if r['company_name'] else "",
+                float(r['cmp']),
+                float(r['day_change_pct']),
+                float(r['wt_value']),
+                date_str,
+                float(r['buy_price']) if r.get('buy_price') is not None else None,
+                float(r['exit_price']) if r.get('exit_price') is not None else None,
+                float(r['target_price']) if r.get('target_price') is not None else None,
+                str(r['confidence']) if r.get('confidence') is not None else None,
+                str(r['recommendation']) if r.get('recommendation') is not None else None
             ))
             
         # 4. Insert execution log
@@ -485,7 +640,7 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         
         conn.commit()
         cur.close()
-        print(f"Cached {len(breakouts)} breakouts, {len(squeezes)} squeezes, {len(gapups)} gapups, and {len(trend_setups)} trend setups in Neon for {date_str}.")
+        print(f"Cached {len(breakouts)} breakouts, {len(squeezes)} squeezes, {len(gapups)} gapups, {len(trend_setups)} trend setups, and {len(wt_cross)} WT Cross setups in Neon for {date_str}.")
         return True
     except Exception as e:
         if conn:
