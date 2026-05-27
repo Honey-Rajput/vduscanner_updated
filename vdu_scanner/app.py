@@ -15,6 +15,142 @@ import watchlist
 from utils import inject_premium_css, get_signal_badge_html, get_day_change_badge_html
 import database
 import ai_detector
+import re
+import threading
+import concurrent.futures
+
+def run_background_ai_scan(symbols_list, date_str, force=False):
+    """
+    Executes high-speed parallel AI scans in a background daemon thread
+    to prevent blocking the Streamlit UI, allowing progressive database updates.
+    """
+    # Guard to prevent duplicate concurrent background scanning threads
+    is_already_running = any(t.name == "AI_Background_Scan" for t in threading.enumerate())
+    if is_already_running:
+        print("Background AI scan thread is already active. Skipping duplicate thread launch.")
+        return
+
+    def scan_and_save(sym):
+        try:
+            # Check if already scanned today to avoid redundant API queries
+            if not force:
+                existing = database.get_pattern_by_date(sym, date_str)
+                if existing and existing.get('pattern_name') not in ["Error", "Pending"]:
+                    return sym, True
+                
+            df_hist = fetch_ohlcv(sym)
+            if df_hist is not None and not df_hist.empty:
+                ans_dict = ai_detector.detect_chart_pattern(sym, df_hist)
+                if ans_dict:
+                    pattern_name = ans_dict.get("pattern_name", "None")
+                    if pattern_name == "Error":
+                        pattern_name = "None Detected"
+                        
+                    subset_5d = df_hist.iloc[-5:]
+                    snap_list = [f"{row['Date'].strftime('%m-%d')}:{row['Close']:.0f}" for _, row in subset_5d.iterrows()]
+                    snap_str = ",".join(snap_list)
+                    
+                    success = database.save_pattern(
+                        symbol=sym,
+                        pattern_name=pattern_name,
+                        confidence=ans_dict.get('confidence', 'None'),
+                        direction=ans_dict.get('direction', 'None'),
+                        analysis_text=ans_dict.get('analysis_text', 'No details available.'),
+                        price_data_snapshot=snap_str,
+                        date_str=date_str
+                    )
+                    return sym, success
+        except Exception as e:
+            print(f"Background AI scan failed for {sym}: {e}")
+        return sym, False
+
+    def thread_runner():
+        print(f"Background AI scan daemon thread started for symbols: {symbols_list} (Force={force})")
+        if not symbols_list:
+            return
+        # Exclude already processed items to speed up background process
+        to_scan = []
+        for s in symbols_list:
+            if force:
+                to_scan.append(s)
+            else:
+                try:
+                    exist = database.get_pattern_by_date(s, date_str)
+                    if not exist or exist.get('pattern_name') in ["Error", "Pending"]:
+                        to_scan.append(s)
+                except Exception:
+                    to_scan.append(s)
+                
+        if not to_scan:
+            print("All symbols already analyzed by AI. Skipping background daemon.")
+            return
+            
+        max_workers = min(5, len(to_scan))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            executor.map(scan_and_save, to_scan)
+        print("Background AI scan daemon thread finished successfully!")
+
+    # Start the daemon thread and name it "AI_Background_Scan"
+    t = threading.Thread(target=thread_runner, name="AI_Background_Scan", daemon=True)
+    t.start()
+
+def ensure_minervini_fields(m_list):
+    if not m_list:
+        return m_list
+    for r in m_list:
+        # Check if fields are already populated in database record
+        if r.get('run_up_200') is not None:
+            r['run_up_200'] = float(r['run_up_200'])
+        else:
+            # Extract from recommendation text (resolving rich JSON first)
+            rec = r.get('recommendation', '')
+            plain_text = rec
+            if rec.strip().startswith("{") and rec.strip().endswith("}"):
+                try:
+                    import json
+                    plain_text = json.loads(rec).get("text", rec)
+                except Exception:
+                    pass
+            
+            run_up_200_match = re.search(r'holding\s+(\d+\.?\d*)%\s+above\s+its\s+200\s+SMA', plain_text, re.IGNORECASE)
+            if run_up_200_match:
+                r['run_up_200'] = float(run_up_200_match.group(1))
+            else:
+                r['run_up_200'] = 10.0
+                
+        if r.get('run_up_52w') is not None:
+            r['run_up_52w'] = float(r['run_up_52w'])
+        else:
+            rec = r.get('recommendation', '')
+            plain_text = rec
+            if rec.strip().startswith("{") and rec.strip().endswith("}"):
+                try:
+                    import json
+                    plain_text = json.loads(rec).get("text", rec)
+                except Exception:
+                    pass
+                    
+            run_up_52w_match = re.search(r'run\s+up\s+(\d+\.?\d*)%\s+from\s+its\s+52w', plain_text, re.IGNORECASE)
+            if run_up_52w_match:
+                r['run_up_52w'] = float(run_up_52w_match.group(1))
+            else:
+                r['run_up_52w'] = 30.0
+                
+        if r.get('is_early') is not None:
+            r['is_early'] = bool(r['is_early'])
+        else:
+            conf = r.get('confidence', '')
+            rec = r.get('recommendation', '')
+            plain_text = rec
+            if rec.strip().startswith("{") and rec.strip().endswith("}"):
+                try:
+                    import json
+                    plain_text = json.loads(rec).get("text", rec)
+                except Exception:
+                    pass
+            r['is_early'] = 'early' in conf.lower() or 'early' in plain_text.lower()
+            
+    return m_list
 
 
 # --- Page Configurations ---
@@ -28,8 +164,11 @@ st.set_page_config(
 # Inject modern Outfit typography, glassmorphism card layouts and custom color styles
 inject_premium_css()
 
-# Initialize PostgreSQL database schema (Neon) on app load
-database.init_db()
+# Initialize PostgreSQL database schema (Neon) on app load — non-fatal if DB is unreachable
+try:
+    database.init_db()
+except Exception as db_init_err:
+    print(f"Database initialization failed (non-fatal): {db_init_err}")
 
 # --- Process Watchlist Query Parameter Actions ---
 if "add_to_watchlist" in st.query_params:
@@ -351,7 +490,10 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         "Stop Loss": lambda x: float(x.get('exit_price') or 0.0),
         "Swing Target": lambda x: float(x.get('target_price') or 0.0),
         "Confidence": lambda x: (x.get('confidence') or "").upper(),
-        "Actionable Guidance & Reasoning": lambda x: (extract_clean_recommendation(x.get('recommendation') or "")).upper()
+        "Actionable Guidance & Reasoning": lambda x: (extract_clean_recommendation(x.get('recommendation') or "")).upper(),
+        "Run Up 200 SMA": lambda x: float(x.get('run_up_200') or 0.0),
+        "Run Up 52w Low": lambda x: float(x.get('run_up_52w') or 0.0),
+        "Remaining Target %": lambda x: float(((x.get('target_price', 0.0) - x.get('cmp', 1.0)) / x.get('cmp', 1.0) * 100) if x.get('cmp', 0.0) > 0 else 0.0)
     }
     
     # 2. Determine active sort column and direction from session state
@@ -363,6 +505,8 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         default_col = "Gap %"
     elif strategy_type == "wavetrend":
         default_col = "WT1"
+    elif strategy_type == "minervini":
+        default_col = "Remaining Target %"
     else:
         default_col = "Symbol"
         
@@ -383,12 +527,13 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         sl = r.get('exit_price') or 0.0
         target = r.get('target_price') or 0.0
         conf = r.get('confidence') or 'Medium'
+        clean_conf = conf.split(" (")[0] if " (" in conf else conf
         rec = r.get('recommendation') or 'No recommendation generated.'
         clean_rec = extract_clean_recommendation(rec)
         
         # Color coding confidence badge
-        conf_color = "#ef4444" if "Low" in conf else "#ffa000" if "Medium" in conf else "#00e676"
-        conf_badge = f'<span class="custom-badge" style="background: rgba({ "0,230,118" if "High" in conf else "255,160,0" if "Medium" in conf else "239,68,68" },0.12); color: {conf_color}; border: 1px solid {conf_color}; font-size: 0.75rem; font-weight: bold; padding: 2px 6px; border-radius: 4px;">{conf}</span>'
+        conf_color = "#ef4444" if "Low" in clean_conf else "#ffa000" if "Medium" in clean_conf else "#00e676"
+        conf_badge = f'<span class="custom-badge" style="background: rgba({ "0,230,118" if "High" in clean_conf else "255,160,0" if "Medium" in clean_conf else "239,68,68" },0.12); color: {conf_color}; border: 1px solid {conf_color}; font-size: 0.75rem; font-weight: bold; padding: 2px 6px; border-radius: 4px;">{clean_conf}</span>'
         
         # Determine unique strategy score for watchlist adding
         if strategy_type == "vdu_breakout":
@@ -451,6 +596,23 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
             chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
             cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
             
+        elif strategy_type == "minervini":
+            chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
+            cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
+            
+            run_up_200 = r.get('run_up_200', 0.0)
+            cells.append(f'<td style="padding: 10px 12px; color: #29b6f6; font-weight: 600;">+{run_up_200:.1f}%</td>')
+            
+            run_up_52w = r.get('run_up_52w', 0.0)
+            cells.append(f'<td style="padding: 10px 12px; color: #ffa000; font-weight: 600;">+{run_up_52w:.1f}%</td>')
+            
+            is_early = r.get('is_early', True)
+            stage_badge = '<span class="custom-badge badge-green" style="font-weight:600;">Early Stage-2</span>' if is_early else '<span class="custom-badge badge-amber" style="font-weight:600;">Extended</span>'
+            cells.append(f'<td style="padding: 10px 12px;">{stage_badge}</td>')
+            
+            rem_pct = ((target - r['cmp']) / r['cmp'] * 100) if r['cmp'] > 0 else 0.0
+            cells.append(f'<td style="padding: 10px 12px; color: #00e676; font-weight: 700;">+{rem_pct:.1f}%</td>')
+            
         elif strategy_type == "wavetrend":
             chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
             cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
@@ -486,6 +648,8 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         headers.extend(["Prev Close", "Open", "Gap %", "Day Chg %", "Volume"])
     elif strategy_type in ["above_ma", "support_ma", "crossover_ma"]:
         headers.extend(["Day Chg %"])
+    elif strategy_type == "minervini":
+        headers.extend(["Day Chg %", "Run Up 200 SMA", "Run Up 52w Low", "Stage Type", "Remaining Target %"])
     elif strategy_type == "wavetrend":
         headers.extend(["Day Chg %", "WT1", "WT2", "WT Diff", "Signal"])
         
@@ -540,13 +704,14 @@ def render_quick_trade_board(results_list: list, key_prefix: str):
         sl = r.get('exit_price') or 0.0
         target = r.get('target_price') or 0.0
         conf = r.get('confidence') or 'Medium'
+        clean_conf = conf.split(" (")[0] if " (" in conf else conf
         rec = r.get('recommendation') or 'No recommendation generated.'
         
         clean_rec = extract_clean_recommendation(rec)
         
         # Color coding confidence badge
-        conf_color = "#ef4444" if "Low" in conf else "#ffa000" if "Medium" in conf else "#00e676"
-        conf_badge = f'<span class="custom-badge" style="background: rgba({ "0,230,118" if "High" in conf else "255,160,0" if "Medium" in conf else "239,68,68" },0.12); color: {conf_color}; border: 1px solid {conf_color}; font-size: 0.75rem; font-weight: bold; padding: 2px 6px; border-radius: 4px;">{conf}</span>'
+        conf_color = "#ef4444" if "Low" in clean_conf else "#ffa000" if "Medium" in clean_conf else "#00e676"
+        conf_badge = f'<span class="custom-badge" style="background: rgba({ "0,230,118" if "High" in clean_conf else "255,160,0" if "Medium" in clean_conf else "239,68,68" },0.12); color: {conf_color}; border: 1px solid {conf_color}; font-size: 0.75rem; font-weight: bold; padding: 2px 6px; border-radius: 4px;">{clean_conf}</span>'
         
         row_str = (
             f'<tr style="border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.2s;">'
@@ -621,24 +786,76 @@ if 'crossover_ma_results' not in st.session_state:
     st.session_state.crossover_ma_results = None
 if 'wt_results' not in st.session_state:
     st.session_state.wt_results = None
+if 'wt_results_by_tf' not in st.session_state:
+    st.session_state.wt_results_by_tf = {}
+if 'minervini_results' not in st.session_state:
+    st.session_state.minervini_results = None
 
 # --- Automatic Daily Database Cache Loader ---
-try:
-    today_ist_str = datetime.now(IST_TIMEZONE).strftime("%Y-%m-%d")
-    cached_log = database.has_scanned_today(today_ist_str)
-    if cached_log and st.session_state.scan_results is None:
-        st.session_state.scan_results = database.get_cached_breakouts(today_ist_str)
-        st.session_state.coiled_results = database.get_cached_squeezes(today_ist_str)
-        st.session_state.gapup_results = database.get_cached_gapups(today_ist_str)
-        st.session_state.above_ma_results = database.get_cached_trend_setups(today_ist_str, 'above_ma')
-        st.session_state.support_ma_results = database.get_cached_trend_setups(today_ist_str, 'support_ma')
-        st.session_state.crossover_ma_results = database.get_cached_trend_setups(today_ist_str, 'crossover_ma')
-        st.session_state.wt_results = database.get_cached_wt_cross(today_ist_str)
-        st.session_state.total_scanned = cached_log['total_scanned']
-        st.session_state.failed_count = 0
-        st.session_state.last_scanned = today_ist_str + " (Loaded from DB Cache)"
-except Exception as cache_err:
-    print(f"Error loading daily database scan cache on boot: {cache_err}")
+# CRITICAL: Only hit the database when results are not yet in session state.
+# This prevents DB calls (and potential hangs) on every Streamlit re-render.
+if st.session_state.scan_results is None and not st.session_state.get('db_cache_checked', False):
+    st.session_state['db_cache_checked'] = True
+    try:
+        # Load the absolute latest scan session date from the database
+        available_dates = database.get_available_scan_dates()
+        if available_dates:
+            latest_date_str = available_dates[0]
+            cached_log = database.has_scanned_today(latest_date_str)
+            if cached_log:
+                try:
+                    st.session_state.scan_results = database.get_cached_breakouts(latest_date_str)
+                except Exception:
+                    st.session_state.scan_results = []
+                try:
+                    st.session_state.coiled_results = database.get_cached_squeezes(latest_date_str)
+                except Exception:
+                    st.session_state.coiled_results = []
+                try:
+                    st.session_state.gapup_results = database.get_cached_gapups(latest_date_str)
+                except Exception:
+                    st.session_state.gapup_results = []
+                try:
+                    st.session_state.above_ma_results = database.get_cached_trend_setups(latest_date_str, 'above_ma')
+                except Exception:
+                    st.session_state.above_ma_results = []
+                try:
+                    st.session_state.support_ma_results = database.get_cached_trend_setups(latest_date_str, 'support_ma')
+                except Exception:
+                    st.session_state.support_ma_results = []
+                try:
+                    st.session_state.crossover_ma_results = database.get_cached_trend_setups(latest_date_str, 'crossover_ma')
+                except Exception:
+                    st.session_state.crossover_ma_results = []
+                try:
+                    st.session_state.wt_results = database.get_cached_wt_cross(latest_date_str)
+                    st.session_state.wt_results_by_tf = {"Daily": st.session_state.wt_results}
+                except Exception:
+                    st.session_state.wt_results = []
+                    st.session_state.wt_results_by_tf = {"Daily": []}
+                try:
+                    st.session_state.minervini_results = ensure_minervini_fields(database.get_cached_trend_setups(latest_date_str, 'minervini'))
+                except Exception:
+                    st.session_state.minervini_results = []
+                
+                st.session_state.total_scanned = cached_log.get('total_scanned', 0)
+                st.session_state.failed_count = 0
+                st.session_state.last_scanned = latest_date_str + " (Loaded from DB Cache)"
+                
+                # Auto-resume background AI scanning if there are unscanned candidates in session state
+                all_syms = []
+                if st.session_state.scan_results:
+                    all_syms.extend([r['symbol'] for r in st.session_state.scan_results])
+                if st.session_state.coiled_results:
+                    all_syms.extend([r['symbol'] for r in st.session_state.coiled_results])
+                all_syms = list(set(all_syms))
+                if all_syms:
+                    try:
+                        run_background_ai_scan(all_syms, latest_date_str)
+                    except Exception as auto_scan_err:
+                        print(f"Failed to auto-resume background AI scan on boot: {auto_scan_err}")
+    except Exception as cache_err:
+        print(f"Error loading daily database scan cache on boot: {cache_err}")
 
 
 # --- HEADER SECTION ---
@@ -670,7 +887,7 @@ min_vol_ratio = st.sidebar.slider(
     "Min Volume Ratio",
     min_value=2.0,
     max_value=10.0,
-    value=3.5,
+    value=2.0,
     step=0.5,
     key="vdu_min_vol_ratio_v4",
     help="Breakout day volume compared to dry average volume (e.g., 2.0 = 2x surge)"
@@ -680,7 +897,7 @@ min_price_chg = st.sidebar.slider(
     "Min Price Change %",
     min_value=1.5,
     max_value=10.0,
-    value=3.0,
+    value=1.5,
     step=0.5,
     key="vdu_min_price_chg_v4",
     help="Minimum price percentage increase on the breakout day (Close vs Open)"
@@ -700,7 +917,7 @@ min_dry_spikes = st.sidebar.slider(
     "Min Spikes in Dry Zone",
     min_value=0,
     max_value=20,
-    value=7,
+    value=2,
     step=1,
     key="vdu_min_dry_spikes_v5",
     help="Requires at least this many volume accumulation spikes inside the dry zone window (up to 20 spikes)"
@@ -710,7 +927,7 @@ min_signal_str = st.sidebar.slider(
     "Min Signal Strength Score",
     min_value=0,
     max_value=100,
-    value=50,
+    value=40,
     step=5,
     key="vdu_min_signal_str_v4",
     help="Filter stocks based on overall calculated algorithmic rating"
@@ -722,44 +939,11 @@ above_50dma_only = st.sidebar.checkbox(
     help="If checked, only lists breakout stocks trading above their 50-day Simple Moving Average"
 )
 
-wt_timeframe = st.sidebar.selectbox(
-    "🌊 WaveTrend Timeframe",
-    options=["Daily", "15 Min", "1 Hour", "Weekly", "Monthly"],
-    index=0,
-    help="Select the timeframe for the WaveTrend scan. Note: Shorter timeframes (15 Min / 1 Hour) fetch real-time intraday quote bars."
-)
-
-force_fresh_scan = st.sidebar.checkbox(
-    "Force Fresh Scan (Bypass Cache)",
-    value=False,
-    help="If checked, bypasses today's database cache and runs a fresh market scan on all listed NSE stocks"
-)
-
 st.sidebar.markdown('---')
 
 
 # --- RUN SCAN ACTION ---
 if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
-    # Check database cache first if Force Fresh Scan is False
-    today_ist_str = datetime.now(IST_TIMEZONE).strftime("%Y-%m-%d")
-    cached_log = database.has_scanned_today(today_ist_str)
-    
-    if cached_log and not force_fresh_scan:
-        st.sidebar.info("⚡ Today's scan is already cached in database!")
-        with st.spinner("Loading cached scan results from Neon PostgreSQL..."):
-            st.session_state.scan_results = database.get_cached_breakouts(today_ist_str)
-            st.session_state.coiled_results = database.get_cached_squeezes(today_ist_str)
-            st.session_state.gapup_results = database.get_cached_gapups(today_ist_str)
-            st.session_state.above_ma_results = database.get_cached_trend_setups(today_ist_str, 'above_ma')
-            st.session_state.support_ma_results = database.get_cached_trend_setups(today_ist_str, 'support_ma')
-            st.session_state.crossover_ma_results = database.get_cached_trend_setups(today_ist_str, 'crossover_ma')
-            st.session_state.wt_results = database.get_cached_wt_cross(today_ist_str)
-            st.session_state.total_scanned = cached_log['total_scanned']
-            st.session_state.failed_count = 0
-            st.session_state.last_scanned = today_ist_str + " (Loaded from DB Cache)"
-            st.toast("⚡ Today's scan loaded instantly from Neon PostgreSQL!", icon="🟢")
-            st.rerun()
-
     # Resolve the universe selected in the sidebar
     if "NIFTY 50" in universe_selection:
         universe_key = "NIFTY 50"
@@ -853,6 +1037,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         above_ma_list = []
         support_ma_list = []
         crossover_ma_list = []
+        minervini_list = []
         wt_list = []
         
         # Unpack manual dry constraints from the sidebar range slider
@@ -937,18 +1122,31 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                     
                 # Check Gap-Up: Open > Yesterday's Close
                 today_open_val = float(df['Open'].iloc[-1])
+                today_close_val = float(df['Close'].iloc[-1])
                 yesterday_close_val = float(df['Close'].iloc[-2]) if len(df) >= 2 else today_open_val
-                if today_open_val > yesterday_close_val:
+                if today_open_val > yesterday_close_val and today_close_val > yesterday_close_val and today_close_val >= (today_open_val * 0.97):
                     gap_pct = (today_open_val - yesterday_close_val) / yesterday_close_val * 100
-                    # Advanced trading metrics for Gap-Ups
+                    
+                    # Rework target dynamically: smaller targets for extreme gap-ups to respect circuits
+                    if gap_pct >= 8.0:
+                        target_multiplier = 1.04
+                        target_pct_str = "+4.0%"
+                    elif gap_pct >= 5.0:
+                        target_multiplier = 1.06
+                        target_pct_str = "+6.0%"
+                    else:
+                        target_multiplier = 1.10
+                        target_pct_str = "+10.0%"
+                        
                     gap_buy_price = round(today_close_val, 2)
                     gap_exit_price = round(today_open_val * 0.98, 2) 
-                    gap_target_price = round(today_close_val * 1.10, 2) 
+                    gap_target_price = round(today_close_val * target_multiplier, 2) 
+                    
                     gap_confidence = "High (Gap-Up Momentum)" if gap_pct > 3.0 else "Medium (Gap-Up)"
                     base_gap_rec = (
                         f"Bullish gap-up breakout of {gap_pct:.2f}% on strong momentum. Buy near ₹{gap_buy_price:.2f} "
                         f"with a stop loss below today's open price at ₹{gap_exit_price:.2f} "
-                        f"targeting swing target ₹{gap_target_price:.2f} (+10.0%)."
+                        f"targeting dynamic swing target ₹{gap_target_price:.2f} ({target_pct_str})."
                     )
                     gap_recommendation = compute_rich_analysis(df, sym, "Gap-Up", base_gap_rec)
                     gapup_list.append({
@@ -1068,6 +1266,88 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                             "recommendation": cross_recommendation
                         })
 
+                # 4. Mark Minervini Stage-2 Trend Template check
+                if len(df_ma) >= 250:
+                    today_row = df_ma.iloc[-1]
+                    yesterday_row = df_ma.iloc[-2]
+                    
+                    c_val = float(today_row['Close'])
+                    
+                    sma50 = float(today_row['SMA50'])
+                    sma150 = float(today_row['SMA150'])
+                    sma200 = float(today_row['SMA200'])
+                    
+                    # 200 SMA 10 days ago (trending up filter)
+                    sma200_10d_ago = float(df_ma['SMA200'].iloc[-11]) if len(df_ma) >= 210 else sma200
+                    
+                    # 52w High / Low
+                    high_52w = float(df_ma['High'].iloc[-250:].max())
+                    low_52w = float(df_ma['Low'].iloc[-250:].min())
+                    
+                    # Mark Minervini Stage-2 Criteria:
+                    # 1. Price is above 150 EMA and 200 SMA
+                    c_above_150_200 = c_val > sma150 and c_val > sma200
+                    # 2. 150 EMA is above 200 SMA
+                    sma150_above_200 = sma150 > sma200
+                    # 3. 200 SMA is rising (uptrend)
+                    sma200_rising = sma200 > sma200_10d_ago
+                    # 4. 50 SMA is above 150 EMA and 200 SMA
+                    sma50_above_others = sma50 > sma150 and sma50 > sma200
+                    # 5. Price is above 50 SMA
+                    c_above_50 = c_val > sma50
+                    # 6. Price is at least 30% above 52w Low
+                    c_above_52w_low = c_val >= 1.30 * low_52w
+                    # 7. Price is within 25% of 52w High
+                    c_within_52w_high = c_val >= 0.75 * high_52w
+                    
+                    if c_above_150_200 and sma150_above_200 and sma200_rising and sma50_above_others and c_above_50 and c_above_52w_low and c_within_52w_high:
+                        run_up_200 = round(((c_val - sma200) / sma200 * 100), 2)
+                        run_up_52w = round(((c_val - low_52w) / low_52w * 100), 2)
+                        is_early = bool(c_val <= 1.20 * sma200)
+                        
+                        # Exit below 200 SMA or 6% below close (tight protection)
+                        exit_price = round(min(sma200 * 0.98, c_val * 0.94), 2)
+                        
+                        # Dynamic target price: early Stage-2 has higher potential than extended Stage-2
+                        distance_200 = (c_val - sma200) / sma200
+                        if is_early:
+                            # Scaled remaining target between 25% and 40% based on support proximity
+                            target_mult = 1.40 - min(0.15, distance_200 * 0.7)
+                        else:
+                            # Extended uptrend, target is tighter (between 12% and 18%)
+                            target_mult = 1.18 - min(0.06, (distance_200 - 0.20) * 0.4)
+                            
+                        target_price = round(max(high_52w * 1.05, c_val * target_mult), 2)
+                        min_confidence = "High (Minervini Stage-2)" if is_early else "Medium-High (Minervini Extended)"
+                        
+                        # Structured JSON technical reasoning
+                        rem_pct = ((target_price - c_val) / c_val * 100)
+                        stage_label = "Early Stage-2 Accumulation" if is_early else "Extended Stage-2 Uptrend"
+                        base_minervini_rec = (
+                            f"Mark Minervini Stage-2 Trend Template verified! The stock is in an active '{stage_label}' "
+                            f"having run up {run_up_52w:.1f}% from its 52w low and "
+                            f"holding {run_up_200:.1f}% above its 200 SMA support. "
+                            f"Buy around CMP ₹{c_val:.2f}. Set stop loss at ₹{exit_price:.2f} (tight support lock) "
+                            f"targeting momentum swing target of ₹{target_price:.2f} (remaining potential +{rem_pct:.1f}%)."
+                        )
+                        minervini_recommendation = compute_rich_analysis(df_ma, sym, "Minervini Stage-2", base_minervini_rec)
+                        
+                        minervini_list.append({
+                            "symbol": sym.strip().upper(),
+                            "company_name": get_company_name(sym),
+                            "cmp": today_close_val,
+                            "day_change_pct": round(((today_close_val - yesterday_row['Close']) / yesterday_row['Close'] * 100), 2),
+                            "setup_type": "minervini",
+                            "run_up_200": run_up_200,
+                            "run_up_52w": run_up_52w,
+                            "is_early": is_early,
+                            "buy_price": round(c_val, 2),
+                            "exit_price": exit_price,
+                            "target_price": target_price,
+                            "confidence": min_confidence,
+                            "recommendation": minervini_recommendation
+                        })
+
                     
                 # Scan breakouts (passing min_dry_spikes)
                 scan_res = scan_stock(
@@ -1141,17 +1421,12 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                         if coiled_res['squeeze_score'] >= min_signal_str:
                             coiled_list.append(coiled_res)
                             
-                # Scan WaveTrend oversold zone with buy signals
-                if wt_timeframe == "Daily":
-                    df_wt = df
-                else:
-                    interval_map = {"15 Min": "15m", "1 Hour": "60m", "Weekly": "1wk", "Monthly": "1mo"}
-                    df_wt = fetch_ohlcv_timeframe(sym, interval=interval_map[wt_timeframe])
-                    
+                # Scan WaveTrend oversold zone with buy signals (Daily is default)
+                df_wt = df
                 if df_wt is not None and len(df_wt) >= 40:
                     wt_res = scan_wt_cross(sym, df_wt)
                     if wt_res is not None:
-                        wt_res['timeframe'] = wt_timeframe
+                        wt_res['timeframe'] = "Daily"
                         wt_list.append(wt_res)
                             
         # Clean progress assets
@@ -1165,7 +1440,9 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         st.session_state.above_ma_results = above_ma_list
         st.session_state.support_ma_results = support_ma_list
         st.session_state.crossover_ma_results = crossover_ma_list
+        st.session_state.minervini_results = minervini_list
         st.session_state.wt_results = wt_list
+        st.session_state.wt_results_by_tf = {"Daily": wt_list}
         st.session_state.total_scanned = n_stocks
         st.session_state.failed_count = failed_count
         st.session_state.last_scanned = datetime.now(IST_TIMEZONE).strftime("%Y-%m-%d %I:%M:%S %p")
@@ -1173,7 +1450,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         # Save to database cache daily
         try:
             today_ist_str = datetime.now(IST_TIMEZONE).strftime("%Y-%m-%d")
-            trend_setups_list = above_ma_list + support_ma_list + crossover_ma_list
+            trend_setups_list = above_ma_list + support_ma_list + crossover_ma_list + minervini_list
             database.save_scan_results(
                 date_str=today_ist_str,
                 breakouts=flagged_list,
@@ -1184,6 +1461,10 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 total_scanned=n_stocks
             )
             st.toast("💾 Today's scan results cached in Neon PostgreSQL!", icon="✅")
+            
+            # Trigger background AI scans automatically in the backend!
+            all_flagged_syms = [r['symbol'] for r in flagged_list] + [r['symbol'] for r in coiled_list]
+            run_background_ai_scan(all_flagged_syms, today_ist_str)
         except Exception as db_err:
             print(f"Failed to cache daily scan results to database: {db_err}")
         
@@ -1249,21 +1530,26 @@ with st.sidebar.expander("🎓 Institutional Buy Signals Guide", expanded=False)
         unsafe_allow_html=True
     )
 
-
 # --- MAIN INTERFACE TABS ---
-tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_history = st.tabs([
-    "📊 Scanner Results", 
-    "📈 Stock Detail", 
-    "📋 My Watchlist",
-    "🤖 AI Chart Pattern Detector",
-    "🌀 Coiled Spring Squeeze",
-    "🚀 Gap-Up Setups",
-    "📈 Above 20 & 50 SMA",
-    "🛡️ 65 SMA Support",
-    "🔄 MA Crossovers",
-    "🌊 Wave Trend",
-    "📅 Scan History"
-])
+try:
+    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_history = st.tabs([
+        "📊 Scanner Results", 
+        "📈 Stock Detail", 
+        "📋 My Watchlist",
+        "🤖 AI Chart Pattern Detector",
+        "🌀 Coiled Spring Squeeze",
+        "🚀 Gap-Up Setups",
+        "📈 Above 20 & 50 SMA",
+        "🛡️ 65 SMA Support",
+        "🔄 MA Crossovers",
+        "🌊 Wave Trend",
+        "🏆 Minervini Stage-2",
+        "📅 Scan History"
+    ])
+except Exception as tab_err:
+    st.error(f"❌ Tab rendering error: {tab_err}")
+    st.exception(tab_err)
+    st.stop()
 
 
 
@@ -1274,70 +1560,81 @@ scan_data = st.session_state.scan_results
 # TAB 1: SCANNER RESULTS
 # ==============================================================================
 with tab_scan:
-    # 1. Premium Metrics Row
-    m1, m2, m3, m4 = st.columns(4)
-    
-    if scan_data:
-        total_scanned = st.session_state.total_scanned
-        flagged_count = len(scan_data)
-        top_score = max(r['signal_strength'] for r in scan_data)
-        avg_vol_ratio = sum(r['volume_ratio'] for r in scan_data) / flagged_count
-    else:
-        total_scanned = st.session_state.total_scanned or 0
-        flagged_count = 0
-        top_score = 0.0
-        avg_vol_ratio = 0.0
+    try:
+        # 1. Premium Metrics Row
+        m1, m2, m3, m4 = st.columns(4)
         
-    m1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Total Stocks Scanned</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{total_scanned}</h3></div>', unsafe_allow_html=True)
-    m2.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Breakouts Identified</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{flagged_count}</h3></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Highest Signal Score</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">{top_score:.1f} <span style="font-size: 1.1rem; color: #94a3b8;">pts</span></h3></div>', unsafe_allow_html=True)
-    m4.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg Volume Ratio</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{avg_vol_ratio:.2f}x</h3></div>', unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # 2. Main Scan Table
-    if scan_data is None:
-        st.info("💡 Get started by configuring your universe in the sidebar and clicking '**Run Scanner**'.")
-    elif len(scan_data) == 0:
-        st.info("ℹ️ No VDU breakouts found today matching these criteria. Try lowering the thresholds in the sidebar (e.g. Min Volume Ratio or Min Price Change) and re-running.")
-    else:
-        # Sort results descending by score
-        sorted_scan = sorted(scan_data, key=lambda x: x['signal_strength'], reverse=True)
+        if scan_data:
+            total_scanned = st.session_state.total_scanned
+            flagged_count = len(scan_data)
+            top_score = max(r['signal_strength'] for r in scan_data)
+            avg_vol_ratio = sum(r['volume_ratio'] for r in scan_data) / flagged_count
+        else:
+            total_scanned = st.session_state.total_scanned or 0
+            flagged_count = 0
+            top_score = 0.0
+            avg_vol_ratio = 0.0
+            
+        m1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Total Stocks Scanned</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{total_scanned}</h3></div>', unsafe_allow_html=True)
+        m2.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Breakouts Identified</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{flagged_count}</h3></div>', unsafe_allow_html=True)
+        m3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Highest Signal Score</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">{top_score:.1f} <span style="font-size: 1.1rem; color: #94a3b8;">pts</span></h3></div>', unsafe_allow_html=True)
+        m4.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg Volume Ratio</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{avg_vol_ratio:.2f}x</h3></div>', unsafe_allow_html=True)
+        st.markdown("---")
+        st.info("💡 **Trading Note on Live Data**: Scans performed during active NSE market hours (9:15 AM - 3:30 PM IST) dynamically process real-time updates for today's active candle. Indicators (RSI, CCI) and scanner scores will naturally vary as today's close prices fluctuate. Scans run after market hours are 100% static and deterministic.")
         
-        # Render the unified Trade Execution Matrix
-        st.markdown("### 📊 Active VDU Breakout Trade Execution Sheet")
-        render_unified_strategy_table(sorted_scan, "vdu_breakout", "vdu_tab")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Download Results Option
-        export_rows = []
-        for r in sorted_scan:
-            export_rows.append({
-                "Symbol": r['symbol'],
-                "Company Name": r['company_name'],
-                "CMP (₹)": r['cmp'],
-                "Day Change %": r['day_change_pct'],
-                "Today Volume": r['today_volume'],
-                "Dry Avg Volume": r['dry_avg_vol'],
-                "Volume Ratio": r['volume_ratio'],
-                "Dry Days": r['dry_days_count'],
-                "Dry Spikes": r['dry_spikes'],
-                "Market Cap (Cr)": round(r.get('market_cap_cr', 3000.0), 1),
-                "Signal Strength": r['signal_strength'],
-                "Above 50 DMA": r['above_50dma'],
-                "Dry Start Date": r['dry_start_date'].strftime("%Y-%m-%d"),
-                "Dry End Date": r['dry_end_date'].strftime("%Y-%m-%d"),
-            })
-        export_df = pd.DataFrame(export_rows)
-        csv_data = export_df.to_csv(index=False).encode('utf-8')
-        
-        st.download_button(
-            label="📥 Download Scan Results (CSV)",
-            data=csv_data,
-            file_name=f"vdu_scan_results_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
+        # 2. Main Scan Table
+        if scan_data is None:
+            st.info("💡 Get started by configuring your universe in the sidebar and clicking '**Run Scanner**'.")
+        elif len(scan_data) == 0:
+            st.info("ℹ️ No VDU breakouts found today matching these criteria. Try lowering the thresholds in the sidebar (e.g. Min Volume Ratio or Min Price Change) and re-running.")
+        else:
+            # Sort results descending by score
+            sorted_scan = sorted(scan_data, key=lambda x: x['signal_strength'], reverse=True)
+            
+            # Download Results Option - safely convert date fields
+            def _safe_date(v):
+                if v is None:
+                    return ""
+                if hasattr(v, 'strftime'):
+                    return v.strftime("%Y-%m-%d")
+                return str(v)
+
+            export_rows = []
+            for r in sorted_scan:
+                export_rows.append({
+                    "Symbol": r['symbol'],
+                    "Company Name": r['company_name'],
+                    "CMP (₹)": r['cmp'],
+                    "Day Change %": r.get('day_change_pct', 0.0),
+                    "Today Volume": r.get('today_volume', 0),
+                    "Dry Avg Volume": r.get('dry_avg_vol', 0),
+                    "Volume Ratio": r.get('volume_ratio', 0.0),
+                    "Dry Days": r.get('dry_days_count', 0),
+                    "Dry Spikes": r.get('dry_spikes', 0),
+                    "Market Cap (Cr)": round(r.get('market_cap_cr', 3000.0), 1),
+                    "Signal Strength": r.get('signal_strength', 0.0),
+                    "Above 50 DMA": r.get('above_50dma', False),
+                    "Dry Start Date": _safe_date(r.get('dry_start_date')),
+                    "Dry End Date": _safe_date(r.get('dry_end_date')),
+                })
+            export_df = pd.DataFrame(export_rows)
+            csv_data = export_df.to_csv(index=False).encode('utf-8')
+            
+            st.download_button(
+                label="📥 Download Scan Results (CSV)",
+                data=csv_data,
+                file_name=f"vdu_scan_results_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                key="dl_scan_top_btn"
+            )
+            
+            st.markdown("---")
+            # Render the unified Trade Execution Matrix
+            st.markdown("### 📊 Active VDU Breakout Trade Execution Sheet")
+            render_unified_strategy_table(sorted_scan, "vdu_breakout", "vdu_tab")
+    except Exception as _tab1_err:
+        st.error(f"❌ Error rendering scan results: {_tab1_err}")
+        st.exception(_tab1_err)
 
 
 # ==============================================================================
@@ -1429,216 +1726,222 @@ with tab_detail:
                     detail_data['df'] = fetch_ohlcv(selected_sym)
             
             df = detail_data['df']
-            if df is not None and 'MA50' not in df.columns:
-                df['MA50'] = df['Close'].rolling(window=50).mean()
-            if df is not None:
-                if 'high_52w' not in detail_data or detail_data.get('high_52w') is None:
-                    detail_data['high_52w'] = float(df['High'].max())
-                if 'low_52w' not in detail_data or detail_data.get('low_52w') is None:
-                    detail_data['low_52w'] = float(df['Low'].min())
-            dry_start_date = detail_data['dry_start_date']
-            dry_end_date = detail_data['dry_end_date']
-            today_date = df['Date'].iloc[-1]
-            
-            # A. Dual subplot layout
-            fig = make_subplots(
-                rows=2, cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.03,
-                row_heights=[0.7, 0.3],
-                subplot_titles=(f"📈 {selected_sym} Candlestick Chart & 50 DMA", f"📊 Volume Analysis")
-            )
-            
-            # Top Candlestick trace
-            fig.add_trace(
-                go.Candlestick(
-                    x=df['Date'],
-                    open=df['Open'],
-                    high=df['High'],
-                    low=df['Low'],
-                    close=df['Close'],
-                    name="Price",
-                    increasing_line_color="#00e676",
-                    decreasing_line_color="#ef4444"
-                ),
-                row=1, col=1
-            )
-            
-            # Top 50 DMA trace
-            fig.add_trace(
-                go.Scatter(
-                    x=df['Date'],
-                    y=df['MA50'],
-                    name="50 DMA",
-                    line=dict(color="#ab47bc", width=2, dash="dash"),
-                    mode="lines"
-                ),
-                row=1, col=1
-            )
-            
-            # Bottom volume color builder
-            bar_colors = []
-            for _, row in df.iterrows():
-                row_date = row['Date']
-                if row_date == today_date:
-                    bar_colors.append("#00e676") # Breakout surge
-                elif dry_start_date <= row_date <= dry_end_date:
-                    bar_colors.append("#475569") # Dry volume zone
-                else:
-                    bar_colors.append("#1e3a8a") # Normal blue volume
-                    
-            fig.add_trace(
-                go.Bar(
-                    x=df['Date'],
-                    y=df['Volume'],
-                    name="Volume",
-                    marker_color=bar_colors,
-                    showlegend=False
-                ),
-                row=2, col=1
-            )
-            
-            # Shade the dry zone region on the candlestick subplot
-            fig.add_vrect(
-                x0=dry_start_date,
-                x1=dry_end_date,
-                fillcolor="rgba(255, 160, 0, 0.08)",
-                opacity=0.6,
-                layer="below",
-                line_width=1,
-                line_color="rgba(255,160,0,0.15)",
-                annotation_text="📭 Dry Zone (Consolidation)",
-                annotation_position="top left",
-                annotation_font=dict(color="#ffa000", size=11, family="Outfit"),
-                row=1, col=1
-            )
-            
-            # Draw breakout arrow annotation on today's price action
-            fig.add_annotation(
-                x=today_date,
-                y=detail_data['cmp'],
-                text="🚀 Breakout",
-                showarrow=True,
-                arrowhead=2,
-                arrowsize=1.2,
-                arrowwidth=2,
-                arrowcolor="#00e676",
-                ax=-50,
-                ay=-40,
-                font=dict(color="#00e676", size=12, family="Outfit", weight="bold"),
-                bgcolor="rgba(0, 230, 118, 0.08)",
-                bordercolor="rgba(0,230,118,0.3)",
-                borderwidth=1,
-                borderpad=4,
-                row=1, col=1
-            )
-            
-            # Visual templates update
-            fig.update_layout(
-                template="plotly_dark",
-                plot_bgcolor="#090d16",
-                paper_bgcolor="#090d16",
-                margin=dict(l=40, r=40, t=40, b=40),
-                xaxis=dict(
-                    rangeslider=dict(visible=False),
-                    gridcolor="rgba(255,255,255,0.04)"
-                ),
-                xaxis2=dict(
-                    gridcolor="rgba(255,255,255,0.04)"
-                ),
-                yaxis=dict(
-                    gridcolor="rgba(255,255,255,0.04)",
-                    title="Price (₹)"
-                ),
-                yaxis2=dict(
-                    gridcolor="rgba(255,255,255,0.04)",
-                    title="Volume"
-                ),
-                font=dict(family="Outfit, sans-serif"),
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                ),
-                height=600
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            st.markdown("---")
-            
-            # B. 3-column detailed metric cards
-            c1, c2, c3 = st.columns(3)
-            
-            # Column 1
-            c1.markdown(f"""
-            <div class="glass-card">
-                <h4 style="margin-top:0; color:#29b6f6; font-size:1.1rem; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:8px;">📈 Price Action Details</h4>
-                <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">Current Price:</span><br><b style="font-size:1.3rem;">₹{detail_data['cmp']:.2f}</b></div>
-                <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">Price Change today:</span><br>{get_day_change_badge_html(detail_data['day_change_pct'])}</div>
-                <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">120d Period High / Low:</span><br><b>₹{detail_data['high_52w']:.2f}</b> / <b>₹{detail_data['low_52w']:.2f}</b></div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Column 2
-            c2.markdown(f"""
-            <div class="glass-card">
-                <h4 style="margin-top:0; color:#00e676; font-size:1.1rem; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:8px;">📭 Dry Zone Volume Metrics</h4>
-                <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">Volume Ratio:</span><br><b style="font-size:1.3rem; color:#00e676;">{detail_data['volume_ratio']:.2f}x</b> (vs Dry Average)</div>
-                <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">Dry zone Duration:</span><br><b>{detail_data['dry_days_count']}</b> trading days</div>
-                <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">Dry average / today's volume:</span><br><b>{int(detail_data['dry_avg_vol']):,}</b> / <b>{detail_data['today_volume']:,}</b></div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Column 3: Custom Plotly Gauge Chart for strength
-            gauge_fig = go.Figure(
-                go.Indicator(
-                    mode="gauge+number",
-                    value=detail_data['signal_strength'],
-                    title={'text': "Signal Score Rating", 'font': {'size': 15, 'color': '#ffa000', 'family': 'Outfit'}},
-                    gauge={
-                        'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "#94a3b8"},
-                        'bar': {'color': "#ffa000"},
-                        'bgcolor': "rgba(255,255,255,0.03)",
-                        'borderwidth': 1,
-                        'bordercolor': "rgba(255,255,255,0.08)",
-                        'steps': [
-                            {'range': [0, 50], 'color': 'rgba(148, 163, 184, 0.08)'},
-                            {'range': [50, 70], 'color': 'rgba(41, 182, 246, 0.12)'},
-                            {'range': [70, 100], 'color': 'rgba(255, 160, 0, 0.16)'}
-                        ]
-                    }
-                )
-            )
-            gauge_fig.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font={'color': "#e2e8f0", 'family': "Outfit"},
-                height=180,
-                margin=dict(l=15, r=15, t=30, b=10)
-            )
-            
-            with c3:
-                st.plotly_chart(gauge_fig, use_container_width=True)
-                
-                # DMA Flag badge
-                dma_status = detail_data['above_50dma']
-                dma_badge = '<span class="custom-badge badge-green">▲ ABOVE 50 DMA</span>' if dma_status else '<span class="custom-badge badge-red">▼ BELOW 50 DMA</span>'
-                
-                st.markdown(
-                    f"""
-                    <div style='text-align:center; padding:12px; background:rgba(17, 24, 39, 0.4); border-radius:10px; border:1px solid rgba(255,255,255,0.05); margin-top:-10px;'>
-                        <b>DMA Trend Filter:</b><br>{dma_badge}
+            if df is None or df.empty:
+                st.warning(f"⚠️ Could not load historical chart data for {selected_sym}. Please verify your connection or choose another stock.")
+            else:
+                try:
+                    if df is not None and 'MA50' not in df.columns:
+                        df['MA50'] = df['Close'].rolling(window=50).mean()
+                    if df is not None:
+                        if 'high_52w' not in detail_data or detail_data.get('high_52w') is None:
+                            detail_data['high_52w'] = float(df['High'].max())
+                        if 'low_52w' not in detail_data or detail_data.get('low_52w') is None:
+                            detail_data['low_52w'] = float(df['Low'].min())
+                    dry_start_date = detail_data['dry_start_date']
+                    dry_end_date = detail_data['dry_end_date']
+                    today_date = df['Date'].iloc[-1]
+
+                    # A. Dual subplot layout
+                    fig = make_subplots(
+                        rows=2, cols=1,
+                        shared_xaxes=True,
+                        vertical_spacing=0.03,
+                        row_heights=[0.7, 0.3],
+                        subplot_titles=(f"📈 {selected_sym} Candlestick Chart & 50 DMA", f"📊 Volume Analysis")
+                    )
+
+                    # Top Candlestick trace
+                    fig.add_trace(
+                        go.Candlestick(
+                            x=df['Date'],
+                            open=df['Open'],
+                            high=df['High'],
+                            low=df['Low'],
+                            close=df['Close'],
+                            name="Price",
+                            increasing_line_color="#00e676",
+                            decreasing_line_color="#ef4444"
+                        ),
+                        row=1, col=1
+                    )
+
+                    # Top 50 DMA trace
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df['Date'],
+                            y=df['MA50'],
+                            name="50 DMA",
+                            line=dict(color="#ab47bc", width=2, dash="dash"),
+                            mode="lines"
+                        ),
+                        row=1, col=1
+                    )
+
+                    # Bottom volume color builder
+                    bar_colors = []
+                    for _, row in df.iterrows():
+                        row_date = row['Date']
+                        if row_date == today_date:
+                            bar_colors.append("#00e676") # Breakout surge
+                        elif dry_start_date <= row_date <= dry_end_date:
+                            bar_colors.append("#475569") # Dry volume zone
+                        else:
+                            bar_colors.append("#1e3a8a") # Normal blue volume
+
+                    fig.add_trace(
+                        go.Bar(
+                            x=df['Date'],
+                            y=df['Volume'],
+                            name="Volume",
+                            marker_color=bar_colors,
+                            showlegend=False
+                        ),
+                        row=2, col=1
+                    )
+
+                    # Shade the dry zone region on the candlestick subplot
+                    fig.add_vrect(
+                        x0=dry_start_date,
+                        x1=dry_end_date,
+                        fillcolor="rgba(255, 160, 0, 0.08)",
+                        opacity=0.6,
+                        layer="below",
+                        line_width=1,
+                        line_color="rgba(255,160,0,0.15)",
+                        annotation_text="📭 Dry Zone (Consolidation)",
+                        annotation_position="top left",
+                        annotation_font=dict(color="#ffa000", size=11, family="Outfit"),
+                        row=1, col=1
+                    )
+
+                    # Draw breakout arrow annotation on today's price action
+                    fig.add_annotation(
+                        x=today_date,
+                        y=detail_data['cmp'],
+                        text="🚀 Breakout",
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowsize=1.2,
+                        arrowwidth=2,
+                        arrowcolor="#00e676",
+                        ax=-50,
+                        ay=-40,
+                        font=dict(color="#00e676", size=12, family="Outfit", weight="bold"),
+                        bgcolor="rgba(0, 230, 118, 0.08)",
+                        bordercolor="rgba(0,230,118,0.3)",
+                        borderwidth=1,
+                        borderpad=4,
+                        row=1, col=1
+                    )
+
+                    # Visual templates update
+                    fig.update_layout(
+                        template="plotly_dark",
+                        plot_bgcolor="#090d16",
+                        paper_bgcolor="#090d16",
+                        margin=dict(l=40, r=40, t=40, b=40),
+                        xaxis=dict(
+                            rangeslider=dict(visible=False),
+                            gridcolor="rgba(255,255,255,0.04)"
+                        ),
+                        xaxis2=dict(
+                            gridcolor="rgba(255,255,255,0.04)"
+                        ),
+                        yaxis=dict(
+                            gridcolor="rgba(255,255,255,0.04)",
+                            title="Price (₹)"
+                        ),
+                        yaxis2=dict(
+                            gridcolor="rgba(255,255,255,0.04)",
+                            title="Volume"
+                        ),
+                        font=dict(family="Outfit, sans-serif"),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1
+                        ),
+                        height=600
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    st.markdown("---")
+
+                    # B. 3-column detailed metric cards
+                    c1, c2, c3 = st.columns(3)
+
+                    # Column 1
+                    c1.markdown(f"""
+                    <div class="glass-card">
+                        <h4 style="margin-top:0; color:#29b6f6; font-size:1.1rem; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:8px;">📈 Price Action Details</h4>
+                        <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">Current Price:</span><br><b style="font-size:1.3rem;">₹{detail_data['cmp']:.2f}</b></div>
+                        <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">Price Change today:</span><br>{get_day_change_badge_html(detail_data['day_change_pct'])}</div>
+                        <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">120d Period High / Low:</span><br><b>₹{detail_data['high_52w']:.2f}</b> / <b>₹{detail_data['low_52w']:.2f}</b></div>
                     </div>
-                    """, 
-                    unsafe_allow_html=True
-                )
-                
-                # Render the gorgeous Technical Indicators dashboard and checklists!
-                st.markdown("<br>", unsafe_allow_html=True)
-                render_trading_setup_card(detail_data, "detail_tab_setup", 0)
+                    """, unsafe_allow_html=True)
+
+                    # Column 2
+                    c2.markdown(f"""
+                    <div class="glass-card">
+                        <h4 style="margin-top:0; color:#00e676; font-size:1.1rem; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:8px;">📭 Dry Zone Volume Metrics</h4>
+                        <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">Volume Ratio:</span><br><b style="font-size:1.3rem; color:#00e676;">{detail_data['volume_ratio']:.2f}x</b> (vs Dry Average)</div>
+                        <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">Dry zone Duration:</span><br><b>{detail_data['dry_days_count']}</b> trading days</div>
+                        <div style="margin: 12px 0;"><span style="color:#94a3b8; font-size:0.9rem;">Dry average / today's volume:</span><br><b>{int(detail_data['dry_avg_vol']):,}</b> / <b>{detail_data['today_volume']:,}</b></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    # Column 3: Custom Plotly Gauge Chart for strength
+                    gauge_fig = go.Figure(
+                        go.Indicator(
+                            mode="gauge+number",
+                            value=detail_data['signal_strength'],
+                            title={'text': "Signal Score Rating", 'font': {'size': 15, 'color': '#ffa000', 'family': 'Outfit'}},
+                            gauge={
+                                'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "#94a3b8"},
+                                'bar': {'color': "#ffa000"},
+                                'bgcolor': "rgba(255,255,255,0.03)",
+                                'borderwidth': 1,
+                                'bordercolor': "rgba(255,255,255,0.08)",
+                                'steps': [
+                                    {'range': [0, 50], 'color': 'rgba(148, 163, 184, 0.08)'},
+                                    {'range': [50, 70], 'color': 'rgba(41, 182, 246, 0.12)'},
+                                    {'range': [70, 100], 'color': 'rgba(255, 160, 0, 0.16)'}
+                                ]
+                            }
+                        )
+                    )
+                    gauge_fig.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font={'color': "#e2e8f0", 'family': "Outfit"},
+                        height=180,
+                        margin=dict(l=15, r=15, t=30, b=10)
+                    )
+
+                    with c3:
+                        st.plotly_chart(gauge_fig, use_container_width=True)
+
+                        # DMA Flag badge
+                        dma_status = detail_data['above_50dma']
+                        dma_badge = '<span class="custom-badge badge-green">▲ ABOVE 50 DMA</span>' if dma_status else '<span class="custom-badge badge-red">▼ BELOW 50 DMA</span>'
+
+                        st.markdown(
+                            f"""
+                            <div style='text-align:center; padding:12px; background:rgba(17, 24, 39, 0.4); border-radius:10px; border:1px solid rgba(255,255,255,0.05); margin-top:-10px;'>
+                                <b>DMA Trend Filter:</b><br>{dma_badge}
+                            </div>
+                            """, 
+                            unsafe_allow_html=True
+                        )
+
+                        # Render the gorgeous Technical Indicators dashboard and checklists!
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        render_trading_setup_card(detail_data, "detail_tab_setup", 0)
+                except Exception as chart_err:
+                    st.error(f"❌ Error rendering charts for {selected_sym}: {chart_err}")
 
 # ==============================================================================
 # TAB 3: WATCHLIST
@@ -1835,6 +2138,7 @@ with tab_watchlist:
 with tab_ai:
     st.markdown("### 🤖 Technical Chart Pattern Recognition with AI")
     st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Inspect daily candle charts with Euri / Groq AI technical analysts and save/cache findings in Neon PostgreSQL database.</p>", unsafe_allow_html=True)
+    st.info("💡 **Trading Note on Live Data**: Scans performed during active NSE market hours (9:15 AM - 3:30 PM IST) dynamically process real-time updates for today's active candle. Indicators (RSI, CCI) and scanner scores will naturally vary as today's close prices fluctuate. Scans run after market hours are 100% static and deterministic.")
     st.markdown("---")
 
     # Fetch available symbols for analyzer
@@ -2121,55 +2425,56 @@ with tab_ai:
         d_c3.markdown(f'<div class="glass-card"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Pending AI Scan</p><h3 style="font-size:1.6rem; margin:5px 0 0 0; color:#ffa000;">{unscanned_count}</h3></div>', unsafe_allow_html=True)
         
         st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Batch Scan Control Buttons
-        btn_cols = st.columns(2)
-        btn_batch_scan = False
-        btn_force_batch_scan = False
-        
-        if unscanned_count > 0:
-            btn_batch_scan = btn_cols[0].button(f"🤖 Run AI Scan on {unscanned_count} Pending Stocks", key="batch_ai_scan_action_btn", use_container_width=True)
+
+        # Check background thread status
+        is_background_scanning = any(t.name == "AI_Background_Scan" for t in threading.enumerate())
+
+        if is_background_scanning:
+            st.markdown(
+                f"""
+                <div class="glass-card" style="padding: 18px; border: 1px solid rgba(41, 182, 246, 0.35); background: rgba(41, 182, 246, 0.05); border-radius: 12px; margin-bottom: 22px;">
+                    <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                        <div style="font-size: 2.2rem; animation: pulse 2s infinite; color: #29b6f6; display: flex; align-items: center;">⚡</div>
+                        <div style="flex: 1; min-width: 250px;">
+                            <span style="font-weight: 700; color: #29b6f6; font-size: 1.1rem; display: block; margin-bottom: 4px;">🤖 AI Pattern Recognition Active in Background</span>
+                            <span style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.4;">
+                                Streamlit is analyzing <b>{unscanned_count} pending stocks</b> using parallel daemon threads in the backend. 
+                                Feel free to monitor other tabs, update your watchlists, or examine charts in the meantime!
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            # Add dynamic refresh button
+            if st.button("🔄 Refresh progressive AI results", key="refresh_ai_background_scan_results", use_container_width=True):
+                st.rerun()
+        else:
+            # Batch Scan Control Buttons
+            btn_cols = st.columns(2)
+            btn_batch_scan = False
+            btn_force_batch_scan = False
             
-        if len(active_flagged_symbols) > 0:
-            btn_force_batch_scan = btn_cols[1].button(f"🔄 Re-analyze all {len(active_flagged_symbols)} Flagged Stocks once", key="force_batch_ai_scan_action_btn", use_container_width=True)
-            
-        if btn_batch_scan or btn_force_batch_scan:
-            prog_ai = st.progress(0)
-            status_ai = st.empty()
-            
-            scanned_ok = 0
-            to_scan_list = []
-            for sym in active_flagged_symbols:
-                if btn_force_batch_scan or (sym not in flagged_db_records):
-                    to_scan_list.append(sym)
-                    
-            for idx, sym in enumerate(to_scan_list):
-                status_ai.text(f"Running AI Technical Analysis on {sym} ({idx+1}/{len(to_scan_list)})...")
-                prog_ai.progress((idx + 1) / len(to_scan_list))
+            if unscanned_count > 0:
+                btn_batch_scan = btn_cols[0].button(f"🤖 Trigger Background AI Scan ({unscanned_count} Pending)", key="batch_ai_scan_action_btn", use_container_width=True)
                 
-                df_hist = fetch_ohlcv(sym)
-                if df_hist is not None and not df_hist.empty:
-                    ans_dict = ai_detector.detect_chart_pattern(sym, df_hist)
-                    if ans_dict and ans_dict.get("pattern_name") != "Error":
-                        subset_5d = df_hist.iloc[-5:]
-                        snap_list = [f"{row['Date'].strftime('%m-%d')}:{row['Close']:.0f}" for _, row in subset_5d.iterrows()]
-                        snap_str = ",".join(snap_list)
-                        
-                        database.save_pattern(
-                            symbol=sym,
-                            pattern_name=ans_dict['pattern_name'],
-                            confidence=ans_dict['confidence'],
-                            direction=ans_dict['direction'],
-                            analysis_text=ans_dict['analysis_text'],
-                            price_data_snapshot=snap_str,
-                            date_str=today_str
-                        )
-                        scanned_ok += 1
-                        
-            status_ai.empty()
-            prog_ai.empty()
-            st.toast(f"✅ Successfully scanned & cached {scanned_ok} stocks in Neon PostgreSQL!", icon="🤖")
-            st.rerun()
+            if len(active_flagged_symbols) > 0:
+                btn_force_batch_scan = btn_cols[1].button(f"🔄 Force Re-scan All ({len(active_flagged_symbols)} Flagged Candidates)", key="force_batch_ai_scan_action_btn", use_container_width=True)
+                
+            if btn_batch_scan or btn_force_batch_scan:
+                to_scan_list = []
+                for sym in active_flagged_symbols:
+                    if btn_force_batch_scan or (sym not in flagged_db_records):
+                        to_scan_list.append(sym)
+                
+                if to_scan_list:
+                    try:
+                        run_background_ai_scan(to_scan_list, today_str, force=btn_force_batch_scan)
+                        st.toast(f"🚀 AI pattern analysis started in the background for {len(to_scan_list)} stocks!", icon="🤖")
+                        st.rerun()
+                    except Exception as launch_err:
+                        st.error(f"❌ Failed to launch background AI scan: {launch_err}")
                 
         # Interactive filters for the dashboard list
         st.markdown("#### 🔍 Filter Patterns Identified")
@@ -2375,12 +2680,6 @@ with tab_coiled:
         # Sort results descending by score
         sorted_coiled = sorted(coiled_data, key=lambda x: x['squeeze_score'], reverse=True)
         
-        # Render the unified Trade Execution Matrix
-        st.markdown("### 🌀 Active Final Contraction Squeezes Trade Execution Sheet")
-        render_unified_strategy_table(sorted_coiled, "coiled_spring", "coiled_tab")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
         # Download Coiled Results Option
         export_coiled = []
         for r in sorted_coiled:
@@ -2401,8 +2700,14 @@ with tab_coiled:
             label="📥 Download Coiled Squeezes (CSV)",
             data=csv_c_data,
             file_name=f"coiled_squeezes_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
+            mime="text/csv",
+            key="dl_coiled_top_btn"
         )
+        
+        st.markdown("---")
+        # Render the unified Trade Execution Matrix
+        st.markdown("### 🌀 Active Final Contraction Squeezes Trade Execution Sheet")
+        render_unified_strategy_table(sorted_coiled, "coiled_spring", "coiled_tab")
 
 # ==============================================================================
 # TAB 6: GAP-UP SETUPS
@@ -2441,12 +2746,6 @@ with tab_gapup:
         # Sort results descending by gap percent
         sorted_gapup = sorted(gapup_data, key=lambda x: x['gap_pct'], reverse=True)
         
-        # Render the unified Trade Execution Matrix
-        st.markdown("### 🚀 Active Gap-Up Momentum Trade Execution Sheet")
-        render_unified_strategy_table(sorted_gapup, "gapup", "gapup_tab")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
         # Download results option
         export_gapup = []
         for r in sorted_gapup:
@@ -2467,8 +2766,14 @@ with tab_gapup:
             label="📥 Download Gap-Up Setups (CSV)",
             data=csv_g_data,
             file_name=f"gapup_setups_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
+            mime="text/csv",
+            key="dl_gapup_top_btn"
         )
+        
+        st.markdown("---")
+        # Render the unified Trade Execution Matrix
+        st.markdown("### 🚀 Active Gap-Up Momentum Trade Execution Sheet")
+        render_unified_strategy_table(sorted_gapup, "gapup", "gapup_tab")
 
 # ==============================================================================
 # TAB 7: ABOVE 20 & 50 SMA
@@ -2488,11 +2793,36 @@ with tab_above_ma:
         # Sort by day change descending
         sorted_above = sorted(above_ma_data, key=lambda x: x.get('day_change_pct', 0.0), reverse=True)
         
+        # Download results option
+        export_above = []
+        for r in sorted_above:
+            export_above.append({
+                "Symbol": r['symbol'],
+                "Company Name": r['company_name'],
+                "CMP (₹)": r['cmp'],
+                "Day Change %": r['day_change_pct'],
+                "Setup Type": r['setup_type'],
+                "Suggested Buy (₹)": r['buy_price'],
+                "Suggested Exit/SL (₹)": r['exit_price'],
+                "Suggested Target (₹)": r['target_price'],
+                "Confidence": r['confidence'],
+                "Recommendation": r['recommendation']
+            })
+        export_a_df = pd.DataFrame(export_above)
+        csv_a_data = export_a_df.to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            label="📥 Download Above 20/50 SMA Results (CSV)",
+            data=csv_a_data,
+            file_name=f"above_20_50_sma_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            key="dl_above_ma_btn"
+        )
+        
+        st.markdown("---")
         # Render the unified Trade Execution Matrix
         st.markdown("### 📈 Active Uptrend Trade Execution Sheet")
         render_unified_strategy_table(sorted_above, "above_ma", "above_ma_tab")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
 
 # ==============================================================================
 # TAB 8: 65 SMA SUPPORT
@@ -2512,11 +2842,36 @@ with tab_support_ma:
         # Sort by day change descending
         sorted_support = sorted(support_ma_data, key=lambda x: x.get('day_change_pct', 0.0), reverse=True)
         
+        # Download results option
+        export_support = []
+        for r in sorted_support:
+            export_support.append({
+                "Symbol": r['symbol'],
+                "Company Name": r['company_name'],
+                "CMP (₹)": r['cmp'],
+                "Day Change %": r['day_change_pct'],
+                "Setup Type": r['setup_type'],
+                "Suggested Buy (₹)": r['buy_price'],
+                "Suggested Exit/SL (₹)": r['exit_price'],
+                "Suggested Target (₹)": r['target_price'],
+                "Confidence": r['confidence'],
+                "Recommendation": r['recommendation']
+            })
+        export_s_df = pd.DataFrame(export_support)
+        csv_s_data = export_s_df.to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            label="📥 Download 65 SMA Support Results (CSV)",
+            data=csv_s_data,
+            file_name=f"65_sma_support_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            key="dl_support_ma_btn"
+        )
+        
+        st.markdown("---")
         # Render the unified Trade Execution Matrix
         st.markdown("### 🛡️ Active 65 SMA Support Trade Execution Sheet")
         render_unified_strategy_table(sorted_support, "support_ma", "support_ma_tab")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
 
 # ==============================================================================
 # TAB 9: MA CROSSOVERS
@@ -2536,22 +2891,120 @@ with tab_crossover_ma:
         # Sort by day change descending
         sorted_crossover = sorted(crossover_ma_data, key=lambda x: x.get('day_change_pct', 0.0), reverse=True)
         
+        # Download results option
+        export_crossover = []
+        for r in sorted_crossover:
+            export_crossover.append({
+                "Symbol": r['symbol'],
+                "Company Name": r['company_name'],
+                "CMP (₹)": r['cmp'],
+                "Day Change %": r['day_change_pct'],
+                "Setup Type": r['setup_type'],
+                "Suggested Buy (₹)": r['buy_price'],
+                "Suggested Exit/SL (₹)": r['exit_price'],
+                "Suggested Target (₹)": r['target_price'],
+                "Confidence": r['confidence'],
+                "Recommendation": r['recommendation']
+            })
+        export_x_df = pd.DataFrame(export_crossover)
+        csv_x_data = export_x_df.to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            label="📥 Download MA Crossover Results (CSV)",
+            data=csv_x_data,
+            file_name=f"ma_crossover_signals_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            key="dl_crossover_ma_btn"
+        )
+        
+        st.markdown("---")
         # Render the unified Trade Execution Matrix
         st.markdown("### 🔄 Active MA Crossover Trade Execution Sheet")
         render_unified_strategy_table(sorted_crossover, "crossover_ma", "crossover_ma_tab")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
 
 # ==============================================================================
 # TAB 10: WAVE TREND (LazyBear)
 # ==============================================================================
 with tab_wavetrend:
-    wt_data = st.session_state.wt_results
-    active_tf = "Daily"
-    if wt_data and len(wt_data) > 0:
-        active_tf = wt_data[0].get('timeframe', 'Daily')
-    st.markdown(f"### 🌊 WaveTrend Oversold Buy Signals ({active_tf} Timeframe)")
-    st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Scan for stocks in the WaveTrend oversold zone (WT1 below -40) using LazyBear's WaveTrend with Crosses indicator. Stocks showing a <b style=\"color:#00e676;\">green dot 🟢 buy signal</b> (WT1 crossing above WT2) in oversold territory are prime mean-reversion candidates.</p>", unsafe_allow_html=True)
+    # 0. Timeframe selector inside tab
+    wt_timeframe = st.selectbox(
+        "🌊 Select WaveTrend Timeframe:",
+        options=["Daily", "15 Min", "1 Hour", "Weekly", "Monthly"],
+        index=0,
+        key="wt_tab_timeframe_selector_v2",
+        help="Select the WaveTrend chart interval. Changing this dynamically runs a real-time parallel scan for active stocks."
+    )
+    
+    # Reactive Loader
+    if 'wt_results_by_tf' not in st.session_state:
+        st.session_state.wt_results_by_tf = {}
+        
+    if wt_timeframe not in st.session_state.wt_results_by_tf or st.session_state.wt_results_by_tf[wt_timeframe] is None:
+        # Resolve symbols to scan: use all scanned breakout symbols or fallback to NIFTY 100/50
+        symbols_to_scan = []
+        if st.session_state.scan_results:
+            symbols_to_scan.extend([r['symbol'] for r in st.session_state.scan_results])
+        if st.session_state.coiled_results:
+            symbols_to_scan.extend([r['symbol'] for r in st.session_state.coiled_results])
+        if st.session_state.above_ma_results:
+            symbols_to_scan.extend([r['symbol'] for r in st.session_state.above_ma_results])
+            
+        # Clean unique list
+        symbols_to_scan = list(set([s.upper() for s in symbols_to_scan]))
+        
+        # Fallback if empty to NIFTY 100
+        if not symbols_to_scan:
+            from config import NIFTY100_SYMBOLS
+            symbols_to_scan = NIFTY100_SYMBOLS
+            
+        with st.spinner(f"Running real-time WaveTrend {wt_timeframe} scan for active breakout & watchlist universe ({len(symbols_to_scan)} stocks)..."):
+            from scanner import scan_wt_cross
+            
+            # Map timeframes
+            interval_map = {"Daily": "1d", "15 Min": "15m", "1 Hour": "60m", "Weekly": "1wk", "Monthly": "1mo"}
+            period_map = {"Daily": "300d", "15 Min": "60d", "1 Hour": "730d", "Weekly": "5y", "Monthly": "10y"}
+            
+            interval = interval_map[wt_timeframe]
+            period = period_map[wt_timeframe]
+            
+            wt_tf_results = []
+            chunk_size = 50
+            sym_chunks = [symbols_to_scan[i:i + chunk_size] for i in range(0, len(symbols_to_scan), chunk_size)]
+            
+            for chunk in sym_chunks:
+                chunk_ns = [f"{s}.NS" for s in chunk]
+                try:
+                    df_bulk = yf.download(tickers=chunk_ns, period=period, interval=interval, group_by="ticker", progress=False, threads=True, timeout=12, auto_adjust=False)
+                    for sym in chunk:
+                        sym_ns = f"{sym}.NS"
+                        if sym_ns in df_bulk:
+                            ticker_df = df_bulk[sym_ns].copy()
+                            if isinstance(ticker_df.columns, pd.MultiIndex):
+                                ticker_df.columns = ticker_df.columns.get_level_values(0)
+                            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                            if all(col in ticker_df.columns for col in required_cols):
+                                ticker_df = ticker_df[required_cols].dropna(subset=['Close'])
+                                if interval not in ["15m", "60m"]:
+                                    ticker_df = ticker_df[ticker_df['Volume'] > 0]
+                                if len(ticker_df) >= 40:
+                                    ticker_df = ticker_df.reset_index()
+                                    ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
+                                    ticker_df['Date'] = pd.to_datetime(ticker_df['Date'])
+                                    
+                                    wt_res = scan_wt_cross(sym, ticker_df)
+                                    if wt_res is not None:
+                                        wt_res['timeframe'] = wt_timeframe
+                                        wt_tf_results.append(wt_res)
+                except Exception as chunk_ex:
+                    print(f"Error bulk downloading WaveTrend chunk: {chunk_ex}")
+            
+            st.session_state.wt_results_by_tf[wt_timeframe] = wt_tf_results
+            st.toast(f"🌊 WaveTrend {wt_timeframe} scan complete!", icon="✅")
+            
+    wt_data = st.session_state.wt_results_by_tf.get(wt_timeframe, [])
+    
+    st.markdown(f"### 🌊 WaveTrend Oversold Buy Signals ({wt_timeframe} Timeframe)")
+    st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Scan for stocks in the WaveTrend oversold zone (WT1 below -30) using LazyBear's WaveTrend with Crosses indicator. Stocks showing a <b style=\"color:#00e676;\">green dot 🟢 buy signal</b> (WT1 crossing above WT2) in oversold territory are prime mean-reversion candidates.</p>", unsafe_allow_html=True)
     st.markdown("---")
     
     # 1. Premium Metrics Row
@@ -2569,7 +3022,7 @@ with tab_wavetrend:
         wt_deepest = 0.0
         wt_avg = 0.0
     
-    wt_m1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Oversold Stocks (WT1 < -40)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{wt_total}</h3></div>', unsafe_allow_html=True)
+    wt_m1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Oversold Stocks (WT1 < -30)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{wt_total}</h3></div>', unsafe_allow_html=True)
     wt_m2.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">🟢 Buy Signals (Green Dot)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{wt_buy_count}</h3></div>', unsafe_allow_html=True)
     wt_m3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Deepest WT1 Value</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">{wt_deepest:.1f}</h3></div>', unsafe_allow_html=True)
     wt_m4.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg WT1 Value</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{wt_avg:.1f}</h3></div>', unsafe_allow_html=True)
@@ -2577,39 +3030,44 @@ with tab_wavetrend:
     st.markdown("---")
     
     # Filter toggle
-    wt_filter_col1, wt_filter_col2 = st.columns([2, 4])
+    wt_filter_col1, wt_filter_col2, wt_filter_col3 = st.columns(3)
     wt_show_buy_only = wt_filter_col1.checkbox(
         "🟢 Show Buy Signals Only (Green Dot)",
-        value=True,
+        value=False,
         help="Show only stocks where WT1 has crossed above WT2 in the oversold zone (bullish crossover buy signal)"
+    )
+    wt_above_20sma = wt_filter_col2.checkbox(
+        "📈 Above 20 SMA Only",
+        value=False,
+        help="Show only stocks currently trading above their 20 SMA trend filter"
+    )
+    wt_above_50sma = wt_filter_col3.checkbox(
+        "🛡️ Above 50 SMA Only",
+        value=False,
+        help="Show only stocks currently trading above their 50 SMA trend filter"
     )
     
     # 2. Main Scan Table
     if wt_data is None:
         st.info("💡 Run the scanner from the sidebar to identify WaveTrend oversold buy signals.")
     elif len(wt_data) == 0:
-        st.info("ℹ️ No stocks found in the WaveTrend oversold zone (WT1 < -40) today.")
+        st.info(f"ℹ️ No stocks found in the WaveTrend oversold zone (WT1 < -30) on {wt_timeframe} timeframe today.")
     else:
-        # Apply filter
+        # Apply filters
+        display_wt = list(wt_data)
         if wt_show_buy_only:
-            display_wt = [r for r in wt_data if r.get('buy_signal', False)]
-        else:
-            display_wt = list(wt_data)
+            display_wt = [r for r in display_wt if r.get('buy_signal', False)]
+        if wt_above_20sma:
+            display_wt = [r for r in display_wt if r.get('above_20sma', False)]
+        if wt_above_50sma:
+            display_wt = [r for r in display_wt if r.get('above_50sma', False)]
         
         # Sort by WT value ascending (deepest oversold first)
         sorted_wt = sorted(display_wt, key=lambda x: x['wt_value'])
         
         if len(sorted_wt) == 0:
-            st.info("ℹ️ No stocks with active buy signals (green dot) found today. Uncheck the filter above to see all oversold stocks.")
+            st.info("ℹ️ No stocks match the active filters found today. Try unchecking some filters above to see more oversold stocks.")
         else:
-            # Render the unified Trade Execution Matrix
-            st.markdown(f"### 🌊 Active {'Buy Signal Candidates' if wt_show_buy_only else 'All Oversold'} Trade Execution Sheet")
-            render_unified_strategy_table(sorted_wt, "wavetrend", "wt_tab")
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-                
-            st.markdown("<br>", unsafe_allow_html=True)
-            
             # Download WaveTrend results
             export_wt = []
             for r in sorted_wt:
@@ -2622,6 +3080,8 @@ with tab_wavetrend:
                     "WT2": r['wt2_value'],
                     "WT Diff (WT1-WT2)": r.get('wt_diff', r['wt_value'] - r['wt2_value']),
                     "Buy Signal": r.get('buy_signal', False),
+                    "Above 20 SMA": r.get('above_20sma', False),
+                    "Above 50 SMA": r.get('above_50sma', False),
                     "Volume": r.get('volume', 0)
                 })
             export_wt_df = pd.DataFrame(export_wt)
@@ -2630,9 +3090,15 @@ with tab_wavetrend:
             st.download_button(
                 label="📥 Download WaveTrend Results (CSV)",
                 data=csv_wt_data,
-                file_name=f"wavetrend_signals_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
+                file_name=f"wavetrend_signals_{wt_timeframe}_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                key="wt_download_csv_btn"
             )
+            
+            st.markdown("---")
+            # Render the unified Trade Execution Matrix
+            st.markdown(f"### 🌊 Active Oversold Trade Execution Sheet ({wt_timeframe})")
+            render_unified_strategy_table(sorted_wt, "wavetrend", "wt_tab")
     
     # WaveTrend indicator explanation
     st.markdown("<br>", unsafe_allow_html=True)
@@ -2656,7 +3122,199 @@ with tab_wavetrend:
 
 
 # ==============================================================================
-# TAB 11: SCAN HISTORY VIEWER
+# TAB 11: MARK MINERVINI STAGE-2 TREND TEMPLATE
+# ==============================================================================
+with tab_minervini:
+    st.markdown("### 🏆 Mark Minervini Stage-2 Trend Template")
+    st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Scan for institutional Stage-2 uptrend breakout setups using the legendary Mark Minervini Trend Template. We prioritize <b style=\"color:#00e676;\">Early Stage-2</b> candidates (within 20% of their 200 SMA support) to capture high-velocity breakouts with tight risk protection.</p>", unsafe_allow_html=True)
+    st.markdown("---")
+    
+    # Mode selector for Minervini tab
+    min_mode = st.radio(
+        "Minervini Session Mode:",
+        ["🟢 View Today's Minervini Setups", "📅 Browse Historical Minervini Scans"],
+        horizontal=True,
+        help="View live setups from today's scanner run, or select any past scan date to view historical Stage-2 setups.",
+        key="min_session_mode_selector"
+    )
+    
+    if min_mode == "🟢 View Today's Minervini Setups":
+        minervini_data = st.session_state.minervini_results
+        
+        if minervini_data is None:
+            st.info("💡 Run the scanner from the sidebar to identify stocks matching the Mark Minervini Stage-2 Trend Template.")
+        elif len(minervini_data) == 0:
+            st.info("ℹ️ No stocks found today matching the Minervini Stage-2 Trend Template. Run scans on a broader universe like Nifty 500 or ALL NSE!")
+        else:
+            # A. Premium Metrics Row
+            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+            
+            m_total = len(minervini_data)
+            early_list = [r for r in minervini_data if r.get('is_early', True)]
+            early_count = len(early_list)
+            extended_count = m_total - early_count
+            
+            avg_run_200 = sum(r['run_up_200'] for r in minervini_data) / m_total
+            avg_run_52w = sum(r['run_up_52w'] for r in minervini_data) / m_total
+            
+            m_col1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Stage-2 Trend Stocks</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{m_total}</h3></div>', unsafe_allow_html=True)
+            m_col2.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">🏆 Early Stage-2 (Safe)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{early_count}</h3></div>', unsafe_allow_html=True)
+            m_col3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg Run Up (200 SMA)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">+{avg_run_200:.1f}%</h3></div>', unsafe_allow_html=True)
+            m_col4.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg Run Up (52w Low)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">+{avg_run_52w:.1f}%</h3></div>', unsafe_allow_html=True)
+            
+            st.markdown("---")
+            
+            # Interactive filter
+            f_min1, f_min2 = st.columns([1, 2])
+            show_early_only = f_min1.checkbox("🏆 Show Early Stage-2 Only (Accumulation Zone)", value=False, key="min_filter_early_only")
+            
+            display_data = early_list if show_early_only else minervini_data
+            
+            if len(display_data) == 0:
+                st.warning("⚠️ No stocks match the active filters in this template view.")
+            else:
+                # Sort by remaining target percentage descending
+                sorted_minervini = sorted(display_data, key=lambda x: x.get('target_price', 0.0) - x.get('cmp', 0.0), reverse=True)
+                
+                # Premium CSV download option
+                export_min = []
+                for r in sorted_minervini:
+                    rem_pct = ((r['target_price'] - r['cmp']) / r['cmp'] * 100) if r['cmp'] > 0 else 0.0
+                    export_min.append({
+                        "Symbol": r['symbol'],
+                        "Company Name": r['company_name'],
+                        "CMP (₹)": r['cmp'],
+                        "Day Change %": r['day_change_pct'],
+                        "Run Up from 200 SMA %": r['run_up_200'],
+                        "Run Up from 52w Low %": r['run_up_52w'],
+                        "Stage Category": "Early Stage-2" if r['is_early'] else "Extended Stage-2",
+                        "Suggested Buy (₹)": r['buy_price'],
+                        "Suggested Stop Loss (₹)": r['exit_price'],
+                        "Suggested Target (₹)": r['target_price'],
+                        "Remaining Target Potential %": round(rem_pct, 2),
+                        "Confidence Rating": r['confidence'],
+                        "Actionable Recommendation": r['recommendation']
+                    })
+                export_m_df = pd.DataFrame(export_min)
+                csv_m_data = export_m_df.to_csv(index=False).encode('utf-8')
+                
+                st.download_button(
+                    label="📥 Download Minervini Template Results (CSV)",
+                    data=csv_m_data,
+                    file_name=f"minervini_stage2_setups_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    key="minervini_download_csv_btn"
+                )
+                
+                st.markdown("---")
+                st.markdown("### 🏆 Active Mark Minervini Stage-2 Trade Execution Sheet")
+                render_unified_strategy_table(sorted_minervini, "minervini", "minervini_tab")
+    else:
+        # Browse historical scans
+        available_dates = database.get_available_scan_dates()
+        if not available_dates:
+            st.warning("⚠️ No historical scans have been recorded in the database yet. Run the scanner to save today's results first!")
+        else:
+            h_date = st.selectbox(
+                "Select Historical Minervini Scan Date:",
+                options=available_dates,
+                index=0,
+                key="min_hist_date_select",
+                help="Choose a date from completed historical scanner sessions."
+            )
+            
+            h_minervini = ensure_minervini_fields(database.get_cached_trend_setups(h_date, 'minervini'))
+            if not h_minervini:
+                st.info(f"ℹ️ No Minervini Stage-2 trend setups were recorded on {h_date}.")
+            else:
+                st.markdown(f"### 🏆 Historical Minervini Stage-2 setups on {h_date} ({len(h_minervini)})")
+                
+                # A. Premium Metrics Row
+                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                
+                m_total = len(h_minervini)
+                early_list = [r for r in h_minervini if r.get('is_early', True)]
+                early_count = len(early_list)
+                extended_count = m_total - early_count
+                
+                avg_run_200 = sum(r['run_up_200'] for r in h_minervini) / m_total
+                avg_run_52w = sum(r['run_up_52w'] for r in h_minervini) / m_total
+                
+                m_col1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Stage-2 Trend Stocks</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{m_total}</h3></div>', unsafe_allow_html=True)
+                m_col2.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">🏆 Early Stage-2 (Safe)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{early_count}</h3></div>', unsafe_allow_html=True)
+                m_col3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg Run Up (200 SMA)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">+{avg_run_200:.1f}%</h3></div>', unsafe_allow_html=True)
+                m_col4.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg Run Up (52w Low)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">+{avg_run_52w:.1f}%</h3></div>', unsafe_allow_html=True)
+                
+                st.markdown("---")
+                
+                show_early_only_h = st.checkbox("🏆 Show Early Stage-2 Only (Accumulation Zone)", value=False, key="min_filter_early_only_h")
+                display_data_h = early_list if show_early_only_h else h_minervini
+                
+                if len(display_data_h) == 0:
+                    st.warning("⚠️ No stocks match the active filters in this historical view.")
+                else:
+                    sorted_minervini_h = sorted(display_data_h, key=lambda x: x.get('target_price', 0.0) - x.get('cmp', 0.0), reverse=True)
+                    
+                    # Premium CSV download option
+                    export_min_h = []
+                    for r in sorted_minervini_h:
+                        rem_pct = ((r['target_price'] - r['cmp']) / r['cmp'] * 100) if r['cmp'] > 0 else 0.0
+                        export_min_h.append({
+                            "Symbol": r['symbol'],
+                            "Company Name": r['company_name'],
+                            "CMP (₹)": r['cmp'],
+                            "Day Change %": r['day_change_pct'],
+                            "Run Up from 200 SMA %": r['run_up_200'],
+                            "Run Up from 52w Low %": r['run_up_52w'],
+                            "Stage Category": "Early Stage-2" if r['is_early'] else "Extended Stage-2",
+                            "Suggested Buy (₹)": r['buy_price'],
+                            "Suggested Stop Loss (₹)": r['exit_price'],
+                            "Suggested Target (₹)": r['target_price'],
+                            "Remaining Target Potential %": round(rem_pct, 2),
+                            "Confidence Rating": r['confidence'],
+                            "Actionable Recommendation": r['recommendation']
+                        })
+                    export_m_df_h = pd.DataFrame(export_min_h)
+                    csv_m_data_h = export_m_df_h.to_csv(index=False).encode('utf-8')
+                    
+                    st.download_button(
+                        label="📥 Download Historical Minervini Template Results (CSV)",
+                        data=csv_m_data_h,
+                        file_name=f"minervini_stage2_setups_hist_{h_date}.csv",
+                        mime="text/csv",
+                        key="minervini_download_csv_btn_h"
+                    )
+                    
+                    st.markdown("---")
+                    st.markdown(f"### 🏆 Historical Mark Minervini Stage-2 Trade Execution Sheet ({h_date})")
+                    render_unified_strategy_table(sorted_minervini_h, "minervini", f"minervini_tab_hist_{h_date}")
+                    
+    st.markdown("<br>", unsafe_allow_html=True)
+    # Trend Template Rules explanation
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.expander("📖 How Mark Minervini Stage-2 Trend Template Works"):
+        st.markdown("""
+        **Mark Minervini Stage-2 Trend Template Rules**
+        
+        To qualify as an institutional Stage-2 stock, an asset must meet all of the following rules:
+        
+        1. **Price is Above 150 EMA and 200 SMA:** Confirms a structural long-term uptrend.
+        2. **150-day EMA is Above the 200-day SMA:** Confirms standard momentum alignment.
+        3. **200-day SMA is Rising:** Confirms the institutional floor is actively tilting upwards.
+        4. **50-day SMA is Above 150 EMA and 200 SMA:** Short-term momentum is supportive of rapid moves.
+        5. **Current Price is Above the 50-day SMA:** Confirms standard breakouts are in active trading.
+        6. **Price is at least 30% Above its 52-Week Low:** Confirms a durable turnaround and trend reversal.
+        7. **Price is Within 25% of its 52-Week High:** Confirms standard strength and dynamic demand.
+        
+        **Strategy & Risk Management:**
+        - **Early Stage-2 Accumulation:** Stocks trading $\le 20\%$ above their rising 200 SMA are in standard buying zones. They offer maximum upside potential with high-probability breakout rates.
+        - **Stop Loss:** Set tightly underneath the 200 SMA support floor to keep risk below 4–5%.
+        - **Swing Target:** Projected standard target is the 52-week high or +25% momentum swing target, prioritizing early entrants with large remaining potential.
+        """, unsafe_allow_html=False)
+
+
+# ==============================================================================
+# TAB 12: SCAN HISTORY VIEWER
 # ==============================================================================
 with tab_history:
     st.markdown("### 📅 Historical Scan Database")
@@ -2778,6 +3436,3 @@ with tab_history:
                 sorted_hwt = sorted(h_wt, key=lambda x: float(x.get('wt_value') or 0.0))
                 st.markdown(f"**🌊 WaveTrend Signals on {selected_date_str} ({len(sorted_hwt)})**")
                 render_unified_strategy_table(sorted_hwt, "wavetrend", f"hist_wt_{selected_date_str}")
-
-
-

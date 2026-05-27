@@ -19,8 +19,21 @@ EURI_BASE_URL = os.getenv("EURI_BASE_URL")
 def _parse_ai_json(content: str) -> dict:
     """
     Cleans up any potential markdown formatting wrapping the JSON string and parses it.
+    Extracts the first valid JSON block containing { ... } to ensure robustness.
     """
     content = content.strip()
+    
+    # Attempt to extract JSON content between first '{' and last '}'
+    first_brace = content.find('{')
+    last_brace = content.rfind('}')
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        json_str = content[first_brace:last_brace+1]
+        try:
+            return json.loads(json_str)
+        except Exception as e:
+            print(f"Failed parsing extracted brace substring as JSON: {e}")
+            
+    # Fallback to standard stripping if no braces or if substring parsing fails
     if content.startswith("```json"):
         content = content[7:]
     elif content.startswith("```"):
@@ -310,7 +323,8 @@ def detect_chart_pattern(symbol: str, df: pd.DataFrame) -> dict:
                 {"role": "user", "content": user_prompt}
             ],
             "response_format": {"type": "json_object"},
-            "temperature": 0.2,
+            "temperature": 0.0,
+            "seed": 42,
             "max_tokens": 1000
         }
         
@@ -371,7 +385,8 @@ def detect_chart_pattern(symbol: str, df: pd.DataFrame) -> dict:
                     {"role": "user", "content": user_prompt}
                 ],
                 "response_format": {"type": "json_object"},
-                "temperature": 0.2
+                "temperature": 0.0,
+                "seed": 42
             }
             
             try:
@@ -407,13 +422,26 @@ def detect_chart_pattern(symbol: str, df: pd.DataFrame) -> dict:
         if not last_error:
             last_error = "GROQ_API_KEY is missing from the environment credentials."
             
-    # Fallback error structure if all options fail
+    # Graceful mathematical fallback instead of failing
+    fallback_pattern = algo_pattern if algo_pattern != "None" else "None Detected"
+    fallback_confidence = algo_result.get("confidence", "None")
+    fallback_direction = "Bullish" if algo_pattern != "None" else "Neutral"
+    fallback_text = (
+        f"Mathematical rule-based detector analyzed the price action: {algo_details} "
+        f"Note: Deep Learning AI model is currently offline or rate-limited. Falling back to local algorithmic scanner."
+    )
     return {
-        "pattern_name": "Error",
-        "confidence": "None",
-        "direction": "None",
-        "analysis_text": f"AI Pattern Recognition engine experienced connectivity problems. Details: {last_error}",
-        "model_used": "None",
+        "pattern_name": fallback_pattern,
+        "confidence": fallback_confidence,
+        "direction": fallback_direction,
+        "analysis_text": fallback_text,
+        "model_used": "Algorithmic Fallback (Offline)",
+        "rsi": round(rsi_val, 1),
+        "cci": round(cci_val, 1),
+        "ema20": round(ema20_val, 2),
+        "sma50": round(sma50_val, 2),
+        "sma200": round(sma200_val, 2),
+        "cmp": round(cmp_val, 2),
         "algo_pattern": algo_pattern,
         "algo_details": algo_details
     }

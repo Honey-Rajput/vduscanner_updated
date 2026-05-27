@@ -18,7 +18,14 @@ def get_connection():
     """
     if not DATABASE_URL:
         raise ValueError("Database_URL is not set in the environment or .env file.")
-    return psycopg2.connect(DATABASE_URL, connect_timeout=3)
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+    try:
+        cur = conn.cursor()
+        cur.execute("SET statement_timeout = 8000;")
+        cur.close()
+    except Exception as e:
+        print(f"Warning: Could not set session statement_timeout: {e}")
+    return conn
 
 def init_db() -> bool:
     """
@@ -104,6 +111,9 @@ def init_db() -> bool:
             setup_type VARCHAR(50) NOT NULL,
             scan_date DATE NOT NULL,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            run_up_200 DOUBLE PRECISION,
+            run_up_52w DOUBLE PRECISION,
+            is_early BOOLEAN,
             UNIQUE(symbol, setup_type, scan_date)
         );
         """,
@@ -163,12 +173,20 @@ def init_db() -> bool:
             "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;",
             "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS confidence VARCHAR(50);",
             "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS recommendation TEXT;",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS run_up_200 DOUBLE PRECISION;",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS run_up_52w DOUBLE PRECISION;",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS is_early BOOLEAN;",
             
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS buy_price DOUBLE PRECISION;",
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION;",
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;",
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS confidence VARCHAR(50);",
-            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS recommendation TEXT;"
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS recommendation TEXT;",
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS wt2_value DOUBLE PRECISION;",
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS buy_signal BOOLEAN DEFAULT FALSE;",
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS wt_diff DOUBLE PRECISION;",
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS above_20sma BOOLEAN DEFAULT FALSE;",
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS above_50sma BOOLEAN DEFAULT FALSE;"
         ]
         for m in migrations:
             try:
@@ -437,7 +455,8 @@ def get_cached_trend_setups(date_str: str, setup_type: str) -> list[dict]:
     """
     query = """
     SELECT symbol, company_name, cmp, day_change_pct, setup_type, scan_date,
-           buy_price, exit_price, target_price, confidence, recommendation
+           buy_price, exit_price, target_price, confidence, recommendation,
+           run_up_200, run_up_52w, is_early
     FROM scanned_trend_setups
     WHERE scan_date = %s AND setup_type = %s;
     """
@@ -466,7 +485,8 @@ def get_cached_wt_cross(date_str: str) -> list[dict]:
     """
     query = """
     SELECT symbol, company_name, cmp, day_change_pct, wt_value, scan_date,
-           buy_price, exit_price, target_price, confidence, recommendation
+           buy_price, exit_price, target_price, confidence, recommendation,
+           wt2_value, buy_signal, wt_diff, above_20sma, above_50sma
     FROM scanned_wt_cross
     WHERE scan_date = %s;
     """
@@ -481,6 +501,12 @@ def get_cached_wt_cross(date_str: str) -> list[dict]:
         for r in rows:
             r_dict = dict(r)
             r_dict['scan_date'] = r_dict['scan_date'].strftime("%Y-%m-%d")
+            # Ensure buy_signal is always a bool (may be None from old rows)
+            r_dict['buy_signal'] = bool(r_dict.get('buy_signal', False))
+            r_dict['wt2_value'] = float(r_dict.get('wt2_value') or 0.0)
+            r_dict['wt_diff'] = float(r_dict.get('wt_diff') or 0.0)
+            r_dict['above_20sma'] = bool(r_dict.get('above_20sma', False))
+            r_dict['above_50sma'] = bool(r_dict.get('above_50sma', False))
             results.append(r_dict)
     except Exception as e:
         print(f"Error loading cached WT Cross from database: {e}")
@@ -593,8 +619,9 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         # 3.8. Insert new trend setups (above_ma, support_ma, crossover_ma)
         insert_trend_query = """
         INSERT INTO scanned_trend_setups (symbol, company_name, cmp, day_change_pct, setup_type, scan_date,
-                                         buy_price, exit_price, target_price, confidence, recommendation)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                         buy_price, exit_price, target_price, confidence, recommendation,
+                                         run_up_200, run_up_52w, is_early)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in trend_setups:
             cur.execute(insert_trend_query, (
@@ -608,14 +635,18 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 float(r['exit_price']) if r.get('exit_price') is not None else None,
                 float(r['target_price']) if r.get('target_price') is not None else None,
                 str(r['confidence']) if r.get('confidence') is not None else None,
-                str(r['recommendation']) if r.get('recommendation') is not None else None
+                str(r['recommendation']) if r.get('recommendation') is not None else None,
+                float(r['run_up_200']) if r.get('run_up_200') is not None else None,
+                float(r['run_up_52w']) if r.get('run_up_52w') is not None else None,
+                bool(r['is_early']) if r.get('is_early') is not None else None
             ))
  
         # 3.9. Insert new WT Cross setups
         insert_wt_query = """
         INSERT INTO scanned_wt_cross (symbol, company_name, cmp, day_change_pct, wt_value, scan_date,
-                                     buy_price, exit_price, target_price, confidence, recommendation)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                     buy_price, exit_price, target_price, confidence, recommendation,
+                                     wt2_value, buy_signal, wt_diff, above_20sma, above_50sma)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in wt_cross:
             cur.execute(insert_wt_query, (
@@ -629,7 +660,12 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 float(r['exit_price']) if r.get('exit_price') is not None else None,
                 float(r['target_price']) if r.get('target_price') is not None else None,
                 str(r['confidence']) if r.get('confidence') is not None else None,
-                str(r['recommendation']) if r.get('recommendation') is not None else None
+                str(r['recommendation']) if r.get('recommendation') is not None else None,
+                float(r['wt2_value']) if r.get('wt2_value') is not None else None,
+                bool(r.get('buy_signal', False)),
+                float(r['wt_diff']) if r.get('wt_diff') is not None else None,
+                bool(r.get('above_20sma', False)),
+                bool(r.get('above_50sma', False))
             ))
             
         # 4. Insert execution log

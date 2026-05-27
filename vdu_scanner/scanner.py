@@ -46,42 +46,38 @@ def scan_stock(
     # Identify indices that DO NOT qualify as dry days (Volume > 40% of baseline volume)
     is_not_dry_mask = history_df['Volume'] > (DRY_VOLUME_THRESHOLD * baseline_avg_vol)
     
-    best_window = None  # Format: (start_idx, end_idx, length, not_dry_count)
+    best_window = None  # Format: (start_idx, end_idx, length, not_dry_count, dry_avg_vol)
+    min_found_avg_vol = float('inf')
     
     # Scan only recent days (at most 10 trading days back) to guarantee the consolidation ended recently
     search_start_idx = len(history_df) - 1
     search_end_idx = max(0, len(history_df) - 10)
     
     for idx in range(search_start_idx, search_end_idx - 1, -1):
-        # Check window lengths from max_dry_days down to min_dry_days
-        for L in range(max_dry_days, min_dry_days - 1, -1):
+        # Check window lengths from min_dry_days up to max_dry_days to find the best tight dry zone
+        for L in range(min_dry_days, max_dry_days + 1):
             start_idx = idx - L + 1
             if start_idx < 0:
                 continue
                 
-            # Count spikes (non-dry volume days) in this window
-            not_dry_count = is_not_dry_mask.iloc[start_idx : idx + 1].sum()
-            if not_dry_count >= min_dry_spikes:
-                best_window = (start_idx, idx, L, int(not_dry_count))
-                break
-        if best_window:
-            break
+            # Calculate average volume of this candidate dry zone window
+            dry_zone_df = history_df.iloc[start_idx : idx + 1]
+            dry_avg_vol = dry_zone_df['Volume'].mean()
             
+            # Enforce quality filter: consolidation zone average volume MUST be dry (<= 60% of baseline average)
+            if dry_avg_vol > 0 and dry_avg_vol <= (0.60 * baseline_avg_vol):
+                # Count spikes (non-dry volume days where Volume > 40% of baseline) inside the window
+                not_dry_count = is_not_dry_mask.iloc[start_idx : idx + 1].sum()
+                if not_dry_count >= min_dry_spikes:
+                    # We found a valid dry window! Select the driest one to represent the highest quality contraction
+                    if dry_avg_vol < min_found_avg_vol:
+                        min_found_avg_vol = dry_avg_vol
+                        best_window = (start_idx, idx, L, int(not_dry_count), dry_avg_vol)
+                        
     if best_window is None:
         return None
         
-    start_idx, end_idx, dry_days_count, dry_spikes = best_window
-    
-    # Calculate statistics inside the dry zone
-    dry_zone_df = history_df.iloc[start_idx : end_idx + 1]
-    dry_avg_vol = dry_zone_df['Volume'].mean()
-    
-    if dry_avg_vol <= 0:
-        return None
-        
-    # Enforce quality filter: consolidation zone average volume MUST be dry (<= 60% of baseline average)
-    if dry_avg_vol > (0.60 * baseline_avg_vol):
-        return None
+    start_idx, end_idx, dry_days_count, dry_spikes, dry_avg_vol = best_window
         
     # --- STEP 3: Today's Breakout Check ---
     today = df.iloc[-1]
@@ -318,7 +314,7 @@ def scan_coiled_spring(symbol: str, df: pd.DataFrame) -> dict | None:
 def scan_wt_cross(symbol: str, df: pd.DataFrame) -> dict | None:
     """
     Scans a stock's history to calculate WaveTrend with Crosses [LazyBear] (WT_CROSS_LB).
-    Returns WT details if wt1 <= -40.0.
+    Returns WT details if wt1 <= -40.0 (oversold zone).
     Also detects bullish buy signal (green dot): wt1 crosses above wt2 from oversold zone.
     
     Mathematical details:
@@ -388,6 +384,14 @@ def scan_wt_cross(symbol: str, df: pd.DataFrame) -> dict | None:
     exit_price = round(buy_price * 0.95, 2)
     target_price = round(buy_price * 1.12, 2)
     
+    # Calculate SMAs to see if price is trading above 20 SMA & 50 SMA
+    df_copy['SMA20'] = df_copy['Close'].rolling(window=20).mean()
+    df_copy['SMA50'] = df_copy['Close'].rolling(window=50).mean()
+    today_sma20 = df_copy['SMA20'].iloc[-1]
+    today_sma50 = df_copy['SMA50'].iloc[-1]
+    above_20sma = bool(buy_price > today_sma20) if not pd.isna(today_sma20) else False
+    above_50sma = bool(buy_price > today_sma50) if not pd.isna(today_sma50) else False
+
     if buy_signal:
         confidence = "High (WT Buy Signal)"
         base_rec = (
@@ -421,7 +425,9 @@ def scan_wt_cross(symbol: str, df: pd.DataFrame) -> dict | None:
         "exit_price": exit_price,
         "target_price": target_price,
         "confidence": confidence,
-        "recommendation": recommendation
+        "recommendation": recommendation,
+        "above_20sma": above_20sma,
+        "above_50sma": above_50sma
     }
 
 def compute_rich_analysis(df, symbol, strategy_name, base_rec_text):
