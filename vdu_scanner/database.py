@@ -938,3 +938,55 @@ def get_cached_weekly_momentum(date_str: str) -> list[dict]:
         if conn:
             conn.close()
     return results
+
+def get_monthly_base_date(year: int, month: int) -> str | None:
+    """
+    Returns the earliest scan_date in the specified month and year that has cached monthly momentum results.
+    """
+    query = """
+    SELECT MIN(scan_date) 
+    FROM scanned_monthly_momentum 
+    WHERE EXTRACT(YEAR FROM scan_date) = %s AND EXTRACT(MONTH FROM scan_date) = %s;
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(query, (year, month))
+        row = cur.fetchone()
+        cur.close()
+        if row and row[0]:
+            return row[0].strftime("%Y-%m-%d") if hasattr(row[0], 'strftime') else str(row[0])
+        return None
+    except Exception as e:
+        print(f"Error getting monthly base date from database: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+def get_weekly_base_date(start_date_str: str, end_date_str: str) -> str | None:
+    """
+    Returns the earliest scan_date in the specified date range that has cached weekly momentum results.
+    """
+    query = """
+    SELECT MIN(scan_date) 
+    FROM scanned_weekly_momentum 
+    WHERE scan_date >= %s AND scan_date <= %s;
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(query, (start_date_str, end_date_str))
+        row = cur.fetchone()
+        cur.close()
+        if row and row[0]:
+            return row[0].strftime("%Y-%m-%d") if hasattr(row[0], 'strftime') else str(row[0])
+        return None
+    except Exception as e:
+        print(f"Error getting weekly base date from database: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()

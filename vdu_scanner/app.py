@@ -880,6 +880,52 @@ def run_background_momentum_scans():
                 MOMENTUM_SCAN_STATUS["is_running"] = False
                 return
 
+            # Resolve monthly and weekly base dates
+            import database
+            from datetime import timedelta
+            from scanner import run_monthly_momentum_update, run_weekly_momentum_update
+            
+            today_ist = datetime.now(IST_TIMEZONE)
+            base_date_monthly = database.get_monthly_base_date(today_ist.year, today_ist.month)
+            
+            iso_weekday = today_ist.isoweekday()
+            start_of_week = today_ist - timedelta(days=iso_weekday - 1)
+            end_of_week = start_of_week + timedelta(days=6)
+            base_date_weekly = database.get_weekly_base_date(start_of_week.strftime("%Y-%m-%d"), end_of_week.strftime("%Y-%m-%d"))
+            
+            if base_date_monthly and base_date_monthly != today_str and base_date_weekly and base_date_weekly != today_str:
+                # Both monthly and weekly are already established! Run lightning-fast updates.
+                MOMENTUM_SCAN_STATUS["status_text"] = "Running lightning-fast momentum price updates..."
+                MOMENTUM_SCAN_STATUS["progress"] = 0.30
+                mm_results = run_monthly_momentum_update(base_date_monthly, today_str)
+                
+                MOMENTUM_SCAN_STATUS["progress"] = 0.60
+                wm_results = run_weekly_momentum_update(base_date_weekly, today_str)
+                
+                MOMENTUM_SCAN_STATUS["status_text"] = "Step 5/5 - Saving results to PostgreSQL & JSON cache..."
+                MOMENTUM_SCAN_STATUS["progress"] = 0.95
+                try:
+                    database.save_monthly_momentum_results(today_str, mm_results)
+                    database.save_weekly_momentum_results(today_str, wm_results)
+                except Exception as db_save_ex:
+                    print(f"Failed to cache momentum results in PostgreSQL: {db_save_ex}")
+                
+                monthly_payload = {"date": today_str, "results": mm_results}
+                with open("monthly_momentum_cache.json", "w") as f:
+                    json.dump(monthly_payload, f, indent=2)
+
+                weekly_payload = {"date": today_str, "results": wm_results}
+                with open("weekly_momentum_cache.json", "w") as f:
+                    json.dump(weekly_payload, f, indent=2)
+
+                MOMENTUM_SCAN_STATUS["monthly_results"] = mm_results
+                MOMENTUM_SCAN_STATUS["weekly_results"] = wm_results
+                MOMENTUM_SCAN_STATUS["status_text"] = "Complete!"
+                MOMENTUM_SCAN_STATUS["progress"] = 1.0
+                MOMENTUM_SCAN_STATUS["is_running"] = False
+                print(f"Background scans complete: Monthly found {len(mm_results)}, Weekly found {len(wm_results)}.")
+                return
+
             # ==========================================
             # STEP 1: DOWNLOAD DAILY DATA TO FILTER BY PRICE
             # ==========================================
@@ -939,106 +985,116 @@ def run_background_momentum_scans():
             wm_candidates = [s for s in price_map_wm if mcap_map.get(s, 0.0) >= 5000.0]
             
             # ==========================================
-            # STEP 3: MONTHLY MOMENTUM SCAN
+            # STEP 3: MONTHLY MOMENTUM SCAN OR UPDATE
             # ==========================================
-            MOMENTUM_SCAN_STATUS["status_text"] = f"Step 3/5 - Scanning {len(mm_candidates)} stocks for Monthly Momentum..."
-            mm_results = []
-            monthly_chunk_size = 50
-            mm_chunks = [mm_candidates[i:i+monthly_chunk_size] for i in range(0, len(mm_candidates), monthly_chunk_size)]
-            
-            for chunk_idx, chunk in enumerate(mm_chunks):
-                MOMENTUM_SCAN_STATUS["status_text"] = f"Step 3/5 - Monthly chunk {chunk_idx+1}/{len(mm_chunks)} (Found {len(mm_results)} matches)..."
-                MOMENTUM_SCAN_STATUS["progress"] = 0.35 + (chunk_idx / len(mm_chunks)) * 0.30
-                chunk_ns = [f"{s}.NS" for s in chunk]
-                try:
-                    df_mbulk = yf.download(tickers=chunk_ns, period="10y", interval="1mo", progress=False)
-                    for sym in chunk:
-                        sym_ns = f"{sym}.NS"
-                        try:
-                            if isinstance(df_mbulk.columns, pd.MultiIndex):
-                                all_t_mm = df_mbulk.columns.get_level_values(1).unique().tolist()
-                                matched_m = next((t for t in all_t_mm if t.upper() == sym_ns.upper()), None)
-                                if matched_m is None:
-                                    continue
-                                t_df_m = df_mbulk.xs(matched_m, axis=1, level=1).copy()
-                            else:
-                                if len(chunk_ns) == 1:
-                                    t_df_m = df_mbulk.copy()
+            if base_date_monthly and base_date_monthly != today_str:
+                MOMENTUM_SCAN_STATUS["status_text"] = f"Step 3/5 - Running Monthly Momentum price update (since {base_date_monthly})..."
+                MOMENTUM_SCAN_STATUS["progress"] = 0.50
+                mm_results = run_monthly_momentum_update(base_date_monthly, today_str)
+            else:
+                MOMENTUM_SCAN_STATUS["status_text"] = f"Step 3/5 - Scanning {len(mm_candidates)} stocks for Monthly Momentum..."
+                mm_results = []
+                monthly_chunk_size = 50
+                mm_chunks = [mm_candidates[i:i+monthly_chunk_size] for i in range(0, len(mm_candidates), monthly_chunk_size)]
+                
+                for chunk_idx, chunk in enumerate(mm_chunks):
+                    MOMENTUM_SCAN_STATUS["status_text"] = f"Step 3/5 - Monthly chunk {chunk_idx+1}/{len(mm_chunks)} (Found {len(mm_results)} matches)..."
+                    MOMENTUM_SCAN_STATUS["progress"] = 0.35 + (chunk_idx / len(mm_chunks)) * 0.30
+                    chunk_ns = [f"{s}.NS" for s in chunk]
+                    try:
+                        df_mbulk = yf.download(tickers=chunk_ns, period="10y", interval="1mo", progress=False)
+                        for sym in chunk:
+                            sym_ns = f"{sym}.NS"
+                            try:
+                                if isinstance(df_mbulk.columns, pd.MultiIndex):
+                                    all_t_mm = df_mbulk.columns.get_level_values(1).unique().tolist()
+                                    matched_m = next((t for t in all_t_mm if t.upper() == sym_ns.upper()), None)
+                                    if matched_m is None:
+                                        continue
+                                    t_df_m = df_mbulk.xs(matched_m, axis=1, level=1).copy()
                                 else:
+                                    if len(chunk_ns) == 1:
+                                        t_df_m = df_mbulk.copy()
+                                    else:
+                                        continue
+                                
+                                req_m = ['Open', 'High', 'Low', 'Close', 'Volume']
+                                if not all(col in t_df_m.columns for col in req_m):
                                     continue
-                            
-                            req_m = ['Open', 'High', 'Low', 'Close', 'Volume']
-                            if not all(col in t_df_m.columns for col in req_m):
-                                continue
-                            t_df_m = t_df_m[req_m].dropna(subset=['Close'])
-                            t_df_m = t_df_m[t_df_m['Volume'] > 0]
-                            if len(t_df_m) < 22:
-                                continue
-                            t_df_m = t_df_m.reset_index()
-                            t_df_m.rename(columns={t_df_m.columns[0]: 'Date'}, inplace=True)
-                            t_df_m['Date'] = pd.to_datetime(t_df_m['Date']).dt.tz_localize(None)
+                                t_df_m = t_df_m[req_m].dropna(subset=['Close'])
+                                t_df_m = t_df_m[t_df_m['Volume'] > 0]
+                                if len(t_df_m) < 22:
+                                    continue
+                                t_df_m = t_df_m.reset_index()
+                                t_df_m.rename(columns={t_df_m.columns[0]: 'Date'}, inplace=True)
+                                t_df_m['Date'] = pd.to_datetime(t_df_m['Date']).dt.tz_localize(None)
 
-                            res_m = scan_monthly_momentum(sym, t_df_m, market_cap_cr=mcap_map.get(sym, 0.0))
-                            if res_m is not None:
-                                if 'df' in res_m:
-                                    del res_m['df']
-                                mm_results.append(res_m)
-                        except Exception:
-                            pass
-                except Exception as e:
-                    print(f"Monthly download chunk {chunk_idx+1} failed: {e}")
-                _time.sleep(0.3)
+                                res_m = scan_monthly_momentum(sym, t_df_m, market_cap_cr=mcap_map.get(sym, 0.0))
+                                if res_m is not None:
+                                    if 'df' in res_m:
+                                        del res_m['df']
+                                    mm_results.append(res_m)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        print(f"Monthly download chunk {chunk_idx+1} failed: {e}")
+                    _time.sleep(0.3)
 
             # ==========================================
-            # STEP 4: WEEKLY MOMENTUM SCAN
+            # STEP 4: WEEKLY MOMENTUM SCAN OR UPDATE
             # ==========================================
-            MOMENTUM_SCAN_STATUS["status_text"] = f"Step 4/5 - Scanning {len(wm_candidates)} stocks for Weekly Momentum..."
-            wm_results = []
-            weekly_chunk_size = 60
-            wm_chunks = [wm_candidates[i:i+weekly_chunk_size] for i in range(0, len(wm_candidates), weekly_chunk_size)]
-            
-            for chunk_idx, chunk in enumerate(wm_chunks):
-                MOMENTUM_SCAN_STATUS["status_text"] = f"Step 4/5 - Weekly chunk {chunk_idx+1}/{len(wm_chunks)} (Found {len(wm_results)} matches)..."
-                MOMENTUM_SCAN_STATUS["progress"] = 0.65 + (chunk_idx / len(wm_chunks)) * 0.30
-                chunk_ns = [f"{s}.NS" for s in chunk]
-                try:
-                    df_wbulk = yf.download(tickers=chunk_ns, period="3y", interval="1wk", progress=False)
-                    for sym in chunk:
-                        sym_ns = f"{sym}.NS"
-                        try:
-                            if isinstance(df_wbulk.columns, pd.MultiIndex):
-                                all_t_wm = df_wbulk.columns.get_level_values(1).unique().tolist()
-                                matched_w = next((t for t in all_t_wm if t.upper() == sym_ns.upper()), None)
-                                if matched_w is None:
-                                    continue
-                                t_df_w = df_wbulk.xs(matched_w, axis=1, level=1).copy()
-                            else:
-                                if len(chunk_ns) == 1:
-                                    t_df_w = df_wbulk.copy()
+            if base_date_weekly and base_date_weekly != today_str:
+                MOMENTUM_SCAN_STATUS["status_text"] = f"Step 4/5 - Running Weekly Momentum price update (since {base_date_weekly})..."
+                MOMENTUM_SCAN_STATUS["progress"] = 0.85
+                wm_results = run_weekly_momentum_update(base_date_weekly, today_str)
+            else:
+                MOMENTUM_SCAN_STATUS["status_text"] = f"Step 4/5 - Scanning {len(wm_candidates)} stocks for Weekly Momentum..."
+                wm_results = []
+                weekly_chunk_size = 60
+                wm_chunks = [wm_candidates[i:i+weekly_chunk_size] for i in range(0, len(wm_candidates), weekly_chunk_size)]
+                
+                for chunk_idx, chunk in enumerate(wm_chunks):
+                    MOMENTUM_SCAN_STATUS["status_text"] = f"Step 4/5 - Weekly chunk {chunk_idx+1}/{len(wm_chunks)} (Found {len(wm_results)} matches)..."
+                    MOMENTUM_SCAN_STATUS["progress"] = 0.65 + (chunk_idx / len(wm_chunks)) * 0.30
+                    chunk_ns = [f"{s}.NS" for s in chunk]
+                    try:
+                        df_wbulk = yf.download(tickers=chunk_ns, period="3y", interval="1wk", progress=False)
+                        for sym in chunk:
+                            sym_ns = f"{sym}.NS"
+                            try:
+                                if isinstance(df_wbulk.columns, pd.MultiIndex):
+                                    all_t_wm = df_wbulk.columns.get_level_values(1).unique().tolist()
+                                    matched_w = next((t for t in all_t_wm if t.upper() == sym_ns.upper()), None)
+                                    if matched_w is None:
+                                        continue
+                                    t_df_w = df_wbulk.xs(matched_w, axis=1, level=1).copy()
                                 else:
+                                    if len(chunk_ns) == 1:
+                                        t_df_w = df_wbulk.copy()
+                                    else:
+                                        continue
+
+                                req_w = ['Open', 'High', 'Low', 'Close', 'Volume']
+                                if not all(col in t_df_w.columns for col in req_w):
                                     continue
+                                t_df_w = t_df_w[req_w].dropna(subset=['Close'])
+                                t_df_w = t_df_w[t_df_w['Volume'] > 0]
+                                if len(t_df_w) < 22:
+                                    continue
+                                t_df_w = t_df_w.reset_index()
+                                t_df_w.rename(columns={t_df_w.columns[0]: 'Date'}, inplace=True)
+                                t_df_w['Date'] = pd.to_datetime(t_df_w['Date']).dt.tz_localize(None)
 
-                            req_w = ['Open', 'High', 'Low', 'Close', 'Volume']
-                            if not all(col in t_df_w.columns for col in req_w):
-                                continue
-                            t_df_w = t_df_w[req_w].dropna(subset=['Close'])
-                            t_df_w = t_df_w[t_df_w['Volume'] > 0]
-                            if len(t_df_w) < 22:
-                                continue
-                            t_df_w = t_df_w.reset_index()
-                            t_df_w.rename(columns={t_df_w.columns[0]: 'Date'}, inplace=True)
-                            t_df_w['Date'] = pd.to_datetime(t_df_w['Date']).dt.tz_localize(None)
-
-                            res_w = scan_weekly_momentum(sym, t_df_w, market_cap_cr=mcap_map.get(sym, 0.0))
-                            if res_w is not None:
-                                if 'df' in res_w:
-                                    del res_w['df']
-                                wm_results.append(res_w)
-                        except Exception:
-                            pass
-                except Exception as e:
-                    print(f"Weekly download chunk {chunk_idx+1} failed: {e}")
-                _time.sleep(0.3)
+                                res_w = scan_weekly_momentum(sym, t_df_w, market_cap_cr=mcap_map.get(sym, 0.0))
+                                if res_w is not None:
+                                    if 'df' in res_w:
+                                        del res_w['df']
+                                    wm_results.append(res_w)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        print(f"Weekly download chunk {chunk_idx+1} failed: {e}")
+                    _time.sleep(0.3)
 
             # ==========================================
             # STEP 5: CACHE & COMPLETE
@@ -3925,8 +3981,33 @@ with tab_monthly_mom:
         if MOMENTUM_SCAN_STATUS["is_running"]:
             st.warning("⚠️ Scanners are already running in the background! Please wait for them to complete.")
         else:
+            import database
+            
+            today_ist = datetime.now(IST_TIMEZONE)
+            base_date_monthly = get_monthly_base_date(today_ist.year, today_ist.month)
+            
+            if base_date_monthly and base_date_monthly != today_str_check:
+                mm_status = st.empty()
+                mm_status.text(f"Running lightning-fast Monthly Momentum price update (since {base_date_monthly})...")
+                mm_results = run_monthly_momentum_update(base_date_monthly, today_str_check)
+                
+                try:
+                    database.save_monthly_momentum_results(today_str_check, mm_results)
+                except Exception as db_save_ex:
+                    print(f"Failed to cache monthly momentum results in PostgreSQL: {db_save_ex}")
+                    
+                import json
+                monthly_payload = {"date": today_str_check, "results": mm_results}
+                with open("monthly_momentum_cache.json", "w") as f:
+                    json.dump(monthly_payload, f, indent=2)
+                    
+                st.session_state.monthly_momentum_results = mm_results
+                mm_status.text(f"✅ Monthly Momentum price update complete for {len(mm_results)} stocks!")
+                st.toast(f"📅 Monthly update done — {len(mm_results)} stocks updated!", icon="✅")
+                st.rerun()
+                
             import concurrent.futures as _cf
-        import time as _time
+            import time as _time
 
         # Resolve universe
         from data_fetcher import get_index_stocks, get_all_nse_symbols
@@ -4231,8 +4312,37 @@ with tab_weekly_mom:
         if MOMENTUM_SCAN_STATUS["is_running"]:
             st.warning("⚠️ Scanners are already running in the background! Please wait for them to complete.")
         else:
+            import database
+            from scanner import run_weekly_momentum_update
+            
+            today_ist = datetime.now(IST_TIMEZONE)
+            iso_weekday = today_ist.isoweekday()
+            start_of_week = today_ist - timedelta(days=iso_weekday - 1)
+            end_of_week = start_of_week + timedelta(days=6)
+            base_date_weekly = database.get_weekly_base_date(start_of_week.strftime("%Y-%m-%d"), end_of_week.strftime("%Y-%m-%d"))
+            
+            if base_date_weekly and base_date_weekly != today_str_check:
+                wm_status = st.empty()
+                wm_status.text(f"Running lightning-fast Weekly Momentum price update (since {base_date_weekly})...")
+                wm_results = run_weekly_momentum_update(base_date_weekly, today_str_check)
+                
+                try:
+                    database.save_weekly_momentum_results(today_str_check, wm_results)
+                except Exception as db_save_ex:
+                    print(f"Failed to cache weekly momentum results in PostgreSQL: {db_save_ex}")
+                    
+                import json
+                weekly_payload = {"date": today_str_check, "results": wm_results}
+                with open("weekly_momentum_cache.json", "w") as f:
+                    json.dump(weekly_payload, f, indent=2)
+                    
+                st.session_state.weekly_momentum_results = wm_results
+                wm_status.text(f"✅ Weekly Momentum price update complete for {len(wm_results)} stocks!")
+                st.toast(f"📈 Weekly update done — {len(wm_results)} stocks updated!", icon="✅")
+                st.rerun()
+                
             import concurrent.futures as _cf_wm
-        import time as _time_wm
+            import time as _time_wm
 
         from data_fetcher import get_index_stocks, get_all_nse_symbols
         if "NIFTY 50" in universe_selection:
@@ -4470,4 +4580,4 @@ with tab_weekly_mom:
             f'<tbody>{chr(10).join(wm_rows_html)}</tbody>'
             f'</table></div></div>',
             unsafe_allow_html=True
-        )
+        )

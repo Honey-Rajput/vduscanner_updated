@@ -920,3 +920,139 @@ def scan_weekly_momentum(symbol: str, df_weekly: pd.DataFrame, market_cap_cr: fl
     except Exception as e:
         print(f"Weekly momentum scan error for {symbol}: {e}")
         return None
+
+def run_monthly_momentum_update(base_date_str: str, today_str: str) -> list[dict]:
+    """
+    Retrieves the locked stock list from base_date_str, fetches their current CMP,
+    calculates updated return percentages since base_date_str, and preserves all other fields.
+    """
+    import database
+    import yfinance as yf
+    
+    # 1. Fetch the original base records from database
+    base_results = database.get_cached_monthly_momentum(base_date_str)
+    if not base_results:
+        return []
+        
+    symbols = [r['symbol'] for r in base_results]
+    tickers = [f"{s}.NS" for s in symbols]
+    
+    # 2. Batch download today's daily quotes to get current CMP and daily price changes
+    cmp_map = {}
+    prev_close_map = {}
+    try:
+        quotes_df = yf.download(tickers=tickers, period="1d", progress=False)
+        if not quotes_df.empty:
+            if isinstance(quotes_df.columns, pd.MultiIndex):
+                # multi-ticker Close and Open
+                for tk in tickers:
+                    sym_clean = tk.replace(".NS", "").upper()
+                    try:
+                        close_series = quotes_df['Close'][tk] if 'Close' in quotes_df else None
+                        open_series = quotes_df['Open'][tk] if 'Open' in quotes_df else None
+                        if close_series is not None and not close_series.empty:
+                            cmp_map[sym_clean] = float(close_series.iloc[-1])
+                        if open_series is not None and not open_series.empty:
+                            prev_close_map[sym_clean] = float(open_series.iloc[-1])
+                    except Exception:
+                        pass
+            else:
+                # single ticker
+                sym_clean = symbols[0]
+                cmp_map[sym_clean] = float(quotes_df['Close'].iloc[-1])
+                prev_close_map[sym_clean] = float(quotes_df['Open'].iloc[-1]) if 'Open' in quotes_df else float(quotes_df['Close'].iloc[-1])
+    except Exception as e:
+        print(f"Error fetching real-time updates for monthly momentum stocks: {e}")
+        
+    # 3. Update the return_1m based on the base price
+    updated_results = []
+    for r in base_results:
+        sym = r['symbol']
+        curr_cmp = cmp_map.get(sym, r['cmp'])  # fallback to base CMP if fetch fails
+        base_cmp = r['cmp']
+        
+        # Calculate monthly return %age since base price (purchase price)
+        if base_cmp > 0:
+            return_1m = (curr_cmp - base_cmp) / base_cmp * 100
+        else:
+            return_1m = 0.0
+            
+        # Daily change %age
+        prev_close = prev_close_map.get(sym, curr_cmp)
+        day_change_pct = (curr_cmp - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
+        
+        # Build updated record - KEEP all indicators & setups exactly the same
+        updated_record = dict(r)
+        updated_record['cmp'] = round(curr_cmp, 2)
+        updated_record['return_1m'] = round(return_1m, 2)
+        updated_record['day_change_pct'] = round(day_change_pct, 2)
+        updated_record['scan_date'] = today_str
+        updated_results.append(updated_record)
+        
+    return updated_results
+
+def run_weekly_momentum_update(base_date_str: str, today_str: str) -> list[dict]:
+    """
+    Retrieves the locked stock list from base_date_str, fetches their current CMP,
+    calculates updated weekly and monthly return percentages, and preserves all other fields.
+    """
+    import database
+    import yfinance as yf
+    
+    # 1. Fetch the original base records from database
+    base_results = database.get_cached_weekly_momentum(base_date_str)
+    if not base_results:
+        return []
+        
+    symbols = [r['symbol'] for r in base_results]
+    tickers = [f"{s}.NS" for s in symbols]
+    
+    # 2. Batch download today's daily quotes to get current CMP
+    cmp_map = {}
+    try:
+        quotes_df = yf.download(tickers=tickers, period="1d", progress=False)
+        if not quotes_df.empty:
+            if isinstance(quotes_df.columns, pd.MultiIndex):
+                for tk in tickers:
+                    sym_clean = tk.replace(".NS", "").upper()
+                    try:
+                        close_series = quotes_df['Close'][tk] if 'Close' in quotes_df else None
+                        if close_series is not None and not close_series.empty:
+                            cmp_map[sym_clean] = float(close_series.iloc[-1])
+                    except Exception:
+                        pass
+            else:
+                sym_clean = symbols[0]
+                cmp_map[sym_clean] = float(quotes_df['Close'].iloc[-1])
+    except Exception as e:
+        print(f"Error fetching real-time updates for weekly momentum stocks: {e}")
+        
+    # 3. Update the return_1m based on the base price
+    updated_results = []
+    for r in base_results:
+        sym = r['symbol']
+        curr_cmp = cmp_map.get(sym, r['cmp'])  # fallback to base CMP if fetch fails
+        base_cmp = r['cmp']
+        
+        # Calculate return %age since base price (purchase price)
+        if base_cmp > 0:
+            return_since_base = (curr_cmp - base_cmp) / base_cmp * 100
+        else:
+            return_since_base = 0.0
+            
+        # Standard weekly return since prev week close
+        prev_close_val = r.get('prev_close') or base_cmp
+        if prev_close_val > 0:
+            weekly_chg_pct = (curr_cmp - prev_close_val) / prev_close_val * 100
+        else:
+            weekly_chg_pct = 0.0
+            
+        # Build updated record - KEEP all indicators & setups exactly the same
+        updated_record = dict(r)
+        updated_record['cmp'] = round(curr_cmp, 2)
+        updated_record['return_1m'] = round(return_since_base, 2)  # User actual trade return since purchase
+        updated_record['weekly_chg_pct'] = round(weekly_chg_pct, 2)
+        updated_record['scan_date'] = today_str
+        updated_results.append(updated_record)
+        
+    return updated_results
