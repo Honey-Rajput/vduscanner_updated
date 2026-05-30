@@ -15,3 +15,6 @@ vdu_scanner/watchlist.csv
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Cache files
+vdu_scanner/*_cache.json

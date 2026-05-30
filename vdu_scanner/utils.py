@@ -96,26 +96,29 @@ def inject_premium_css():
         
         /* Styling Streamlit Tabs */
         .stTabs [data-baseweb="tab-list"] {
-            gap: 10px;
-            background-color: transparent;
+            flex-wrap: wrap !important;
+            gap: 8px 10px !important;
+            background-color: transparent !important;
+            height: auto !important;
         }
         
         .stTabs [data-baseweb="tab"] {
-            height: 45px;
-            white-space: pre-wrap;
-            background-color: rgba(255, 255, 255, 0.02);
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.03);
-            color: #94a3b8;
-            padding: 10px 20px;
-            font-weight: 500;
-            transition: all 0.3s ease;
+            min-height: 40px !important;
+            height: auto !important;
+            white-space: nowrap !important;
+            background-color: rgba(255, 255, 255, 0.02) !important;
+            border-radius: 8px !important;
+            border: 1px solid rgba(255, 255, 255, 0.03) !important;
+            color: #94a3b8 !important;
+            padding: 8px 16px !important;
+            font-weight: 500 !important;
+            transition: all 0.3s ease !important;
         }
         
         .stTabs [data-baseweb="tab"]:hover {
-            background-color: rgba(41, 182, 246, 0.05);
-            color: #29b6f6;
-            border-color: rgba(41, 182, 246, 0.15);
+            background-color: rgba(41, 182, 246, 0.05) !important;
+            color: #29b6f6 !important;
+            border-color: rgba(41, 182, 246, 0.15) !important;
         }
         
         .stTabs [aria-selected="true"] {

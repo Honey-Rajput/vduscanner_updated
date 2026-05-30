@@ -139,6 +139,61 @@ def init_db() -> bool:
             squeezes_found INT NOT NULL,
             completed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scanned_monthly_momentum (
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR(20) NOT NULL,
+            company_name VARCHAR(200),
+            cmp DOUBLE PRECISION,
+            day_change_pct DOUBLE PRECISION,
+            ema8 DOUBLE PRECISION,
+            ema12 DOUBLE PRECISION,
+            ema20 DOUBLE PRECISION,
+            roc6 DOUBLE PRECISION,
+            rsi_monthly DOUBLE PRECISION,
+            volume BIGINT,
+            vol_sma12 DOUBLE PRECISION,
+            market_cap_cr DOUBLE PRECISION,
+            momentum_score DOUBLE PRECISION,
+            buy_price DOUBLE PRECISION,
+            exit_price DOUBLE PRECISION,
+            target_price DOUBLE PRECISION,
+            confidence VARCHAR(50),
+            recommendation TEXT,
+            return_1m DOUBLE PRECISION,
+            scan_date DATE NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, scan_date)
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scanned_weekly_momentum (
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR(20) NOT NULL,
+            company_name VARCHAR(200),
+            cmp DOUBLE PRECISION,
+            weekly_chg_pct DOUBLE PRECISION,
+            prev_close DOUBLE PRECISION,
+            curr_open DOUBLE PRECISION,
+            close_sma20 DOUBLE PRECISION,
+            rsi_weekly DOUBLE PRECISION,
+            cci_weekly DOUBLE PRECISION,
+            volume BIGINT,
+            vol_sma20 DOUBLE PRECISION,
+            vol_ratio DOUBLE PRECISION,
+            market_cap_cr DOUBLE PRECISION,
+            weekly_score DOUBLE PRECISION,
+            buy_price DOUBLE PRECISION,
+            exit_price DOUBLE PRECISION,
+            target_price DOUBLE PRECISION,
+            confidence VARCHAR(50),
+            recommendation TEXT,
+            return_1m DOUBLE PRECISION,
+            scan_date DATE NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, scan_date)
+        );
         """
     ]
     
@@ -188,7 +243,23 @@ def init_db() -> bool:
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS wt_diff DOUBLE PRECISION;",
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS above_20sma BOOLEAN DEFAULT FALSE;",
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS above_50sma BOOLEAN DEFAULT FALSE;",
-            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS volume BIGINT;"
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS volume BIGINT;",
+            
+            # Scanned Monthly Momentum Table Migrations
+            "ALTER TABLE scanned_monthly_momentum ADD COLUMN IF NOT EXISTS buy_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_monthly_momentum ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_monthly_momentum ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_monthly_momentum ADD COLUMN IF NOT EXISTS confidence VARCHAR(50);",
+            "ALTER TABLE scanned_monthly_momentum ADD COLUMN IF NOT EXISTS recommendation TEXT;",
+            "ALTER TABLE scanned_monthly_momentum ADD COLUMN IF NOT EXISTS return_1m DOUBLE PRECISION;",
+            
+            # Scanned Weekly Momentum Table Migrations
+            "ALTER TABLE scanned_weekly_momentum ADD COLUMN IF NOT EXISTS buy_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_weekly_momentum ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_weekly_momentum ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;",
+            "ALTER TABLE scanned_weekly_momentum ADD COLUMN IF NOT EXISTS confidence VARCHAR(50);",
+            "ALTER TABLE scanned_weekly_momentum ADD COLUMN IF NOT EXISTS recommendation TEXT;",
+            "ALTER TABLE scanned_weekly_momentum ADD COLUMN IF NOT EXISTS return_1m DOUBLE PRECISION;"
         ]
         for m in migrations:
             try:
@@ -690,3 +761,180 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
     finally:
         if conn:
             conn.close()
+
+def save_monthly_momentum_results(date_str: str, results: list[dict]) -> bool:
+    """
+    Saves the Monthly Momentum scan results to PostgreSQL, supporting daily overwrites.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        
+        # 1. Clean existing records for this date
+        cur.execute("DELETE FROM scanned_monthly_momentum WHERE scan_date = %s;", (date_str,))
+        
+        # 2. Insert new results
+        insert_query = """
+        INSERT INTO scanned_monthly_momentum (
+            symbol, company_name, cmp, day_change_pct, ema8, ema12, ema20, roc6, rsi_monthly, 
+            volume, vol_sma12, market_cap_cr, momentum_score, buy_price, exit_price, target_price, 
+            confidence, recommendation, return_1m, scan_date
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+        for r in results:
+            cur.execute(insert_query, (
+                str(r['symbol']),
+                str(r['company_name']) if r['company_name'] else "",
+                float(r['cmp']),
+                float(r['day_change_pct']),
+                float(r['ema8']),
+                float(r['ema12']),
+                float(r['ema20']),
+                float(r['roc6']),
+                float(r['rsi_monthly']),
+                int(r['volume']),
+                float(r['vol_sma12']),
+                float(r['market_cap_cr']),
+                float(r['momentum_score']),
+                float(r['buy_price']) if r.get('buy_price') is not None else None,
+                float(r['exit_price']) if r.get('exit_price') is not None else None,
+                float(r['target_price']) if r.get('target_price') is not None else None,
+                str(r['confidence']) if r.get('confidence') is not None else None,
+                str(r['recommendation']) if r.get('recommendation') is not None else None,
+                float(r['return_1m']) if r.get('return_1m') is not None else None,
+                date_str
+            ))
+            
+        conn.commit()
+        cur.close()
+        print(f"Cached {len(results)} Monthly Momentum scan results in PostgreSQL for {date_str}.")
+        return True
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error saving Monthly Momentum results to PostgreSQL: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def save_weekly_momentum_results(date_str: str, results: list[dict]) -> bool:
+    """
+    Saves the Weekly Momentum scan results to PostgreSQL, supporting daily overwrites.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        
+        # 1. Clean existing records for this date
+        cur.execute("DELETE FROM scanned_weekly_momentum WHERE scan_date = %s;", (date_str,))
+        
+        # 2. Insert new results
+        insert_query = """
+        INSERT INTO scanned_weekly_momentum (
+            symbol, company_name, cmp, weekly_chg_pct, prev_close, curr_open, close_sma20, 
+            rsi_weekly, cci_weekly, volume, vol_sma20, vol_ratio, market_cap_cr, weekly_score, 
+            buy_price, exit_price, target_price, confidence, recommendation, return_1m, scan_date
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+        for r in results:
+            cur.execute(insert_query, (
+                str(r['symbol']),
+                str(r['company_name']) if r['company_name'] else "",
+                float(r['cmp']),
+                float(r['weekly_chg_pct']),
+                float(r['prev_close']),
+                float(r['curr_open']),
+                float(r['close_sma20']),
+                float(r['rsi_weekly']),
+                float(r['cci_weekly']),
+                int(r['volume']),
+                float(r['vol_sma20']),
+                float(r['vol_ratio']),
+                float(r['market_cap_cr']),
+                float(r['weekly_score']),
+                float(r['buy_price']) if r.get('buy_price') is not None else None,
+                float(r['exit_price']) if r.get('exit_price') is not None else None,
+                float(r['target_price']) if r.get('target_price') is not None else None,
+                str(r['confidence']) if r.get('confidence') is not None else None,
+                str(r['recommendation']) if r.get('recommendation') is not None else None,
+                float(r['return_1m']) if r.get('return_1m') is not None else None,
+                date_str
+            ))
+            
+        conn.commit()
+        cur.close()
+        print(f"Cached {len(results)} Weekly Momentum scan results in PostgreSQL for {date_str}.")
+        return True
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error saving Weekly Momentum results to PostgreSQL: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def get_cached_monthly_momentum(date_str: str) -> list[dict]:
+    """
+    Retrieves the cached Monthly Momentum results for a specific date from PostgreSQL.
+    """
+    query = """
+    SELECT symbol, company_name, cmp, day_change_pct, ema8, ema12, ema20, roc6, rsi_monthly, 
+           volume, vol_sma12, market_cap_cr, momentum_score, buy_price, exit_price, target_price, 
+           confidence, recommendation, return_1m, scan_date
+    FROM scanned_monthly_momentum
+    WHERE scan_date = %s;
+    """
+    conn = None
+    results = []
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(query, (date_str,))
+        rows = cur.fetchall()
+        cur.close()
+        for r in rows:
+            r_dict = dict(r)
+            r_dict['scan_date'] = r_dict['scan_date'].strftime("%Y-%m-%d")
+            results.append(r_dict)
+    except Exception as e:
+        print(f"Error loading cached Monthly Momentum from database: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return results
+
+def get_cached_weekly_momentum(date_str: str) -> list[dict]:
+    """
+    Retrieves the cached Weekly Momentum results for a specific date from PostgreSQL.
+    """
+    query = """
+    SELECT symbol, company_name, cmp, weekly_chg_pct, prev_close, curr_open, close_sma20, 
+           rsi_weekly, cci_weekly, volume, vol_sma20, vol_ratio, market_cap_cr, weekly_score, 
+           buy_price, exit_price, target_price, confidence, recommendation, return_1m, scan_date
+    FROM scanned_weekly_momentum
+    WHERE scan_date = %s;
+    """
+    conn = None
+    results = []
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(query, (date_str,))
+        rows = cur.fetchall()
+        cur.close()
+        for r in rows:
+            r_dict = dict(r)
+            r_dict['scan_date'] = r_dict['scan_date'].strftime("%Y-%m-%d")
+            results.append(r_dict)
+    except Exception as e:
+        print(f"Error loading cached Weekly Momentum from database: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return results

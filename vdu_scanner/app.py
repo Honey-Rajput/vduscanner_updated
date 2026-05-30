@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 from config import IST_TIMEZONE, get_company_name, DRY_ZONE_MIN_DAYS, DRY_ZONE_MAX_DAYS, MIN_VOLUME_RATIO, MIN_PRICE_CHANGE
 from data_fetcher import fetch_ohlcv, get_index_stocks, fetch_ohlcv_timeframe
-from scanner import scan_stock, scan_coiled_spring, scan_wt_cross, compute_rich_analysis
+from scanner import scan_stock, scan_coiled_spring, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum
 
 import watchlist
 from utils import inject_premium_css, get_signal_badge_html, get_day_change_badge_html
@@ -446,23 +446,62 @@ def render_trading_setup_card(r: dict, key_prefix: str, idx: int):
 
 
 
-def extract_clean_recommendation(rec: str) -> str:
+def extract_clean_recommendation(rec) -> str:
     if not rec:
         return ""
-    rec_str = rec.strip()
+    if isinstance(rec, dict):
+        if rec.get("is_rich"):
+            text_val = rec.get("text", "")
+            if isinstance(text_val, str):
+                text_val = text_val.replace('\\u20b9', '₹')
+            return text_val
+        return str(rec)
+        
+    rec_str = str(rec).strip()
+    
+    # Proactively unescape/unwrap outer quotes repeatedly (up to 3 times) to handle double-escaped payloads
+    for _ in range(3):
+        if rec_str.startswith('"') and rec_str.endswith('"'):
+            rec_str = rec_str[1:-1].strip()
+        elif rec_str.startswith("'") and rec_str.endswith("'"):
+            rec_str = rec_str[1:-1].strip()
+        else:
+            break
+            
     if rec_str.startswith("{") and rec_str.endswith("}"):
         try:
             import json
-            data = json.loads(rec_str)
-            if isinstance(data, dict) and data.get("is_rich"):
-                text_val = data.get("text", rec_str)
-                if isinstance(text_val, str):
-                    text_val = text_val.replace('\\u20b9', '₹')
-                return text_val
+            # First try parsing the raw unescaped string
+            try:
+                data = json.loads(rec_str)
+            except Exception:
+                # Try handling pythonic string representations
+                formatted_rec = rec_str.replace("'", '"').replace("True", "true").replace("False", "false").replace("None", "null")
+                data = json.loads(formatted_rec)
+            
+            # Recursively unpack if stringified json inside json
+            if isinstance(data, str) and data.strip().startswith("{"):
+                try:
+                    data = json.loads(data)
+                except Exception:
+                    pass
+                    
+            if isinstance(data, dict):
+                if data.get("is_rich"):
+                    text_val = data.get("text", "")
+                    if isinstance(text_val, str):
+                        return text_val.replace('\\u20b9', '₹')
+                else:
+                    # If it's a simple dict but not marked as is_rich, check if there's any text/analysis key
+                    for key in ["text", "analysis_text", "recommendation", "rec"]:
+                        if data.get(key):
+                            return str(data[key]).replace('\\u20b9', '₹')
         except Exception:
             pass
+            
+    # Proactively unescape backslashes for unicode characters or quotes
     if isinstance(rec_str, str):
-        rec_str = rec_str.replace('\\u20b9', '₹')
+        rec_str = rec_str.replace('\\"', '"').replace('\\u20b9', '₹')
     return rec_str
 
 def render_unified_strategy_table(results_list: list, strategy_type: str, key_prefix: str):
@@ -639,7 +678,7 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         cells.append(f'<td style="padding: 10px 12px; color: #ef4444; font-weight: 600;">₹{sl:,.2f}</td>')
         cells.append(f'<td style="padding: 10px 12px; color: #00e676; font-weight: 600;">₹{target:,.2f}</td>')
         cells.append(f'<td style="padding: 10px 12px;">{conf_badge}</td>')
-        cells.append(f'<td style="padding: 10px 12px; color: #94a3b8; font-style: italic; font-size: 0.82rem; line-height: 1.4;">"{clean_rec}"</td>')
+        cells.append(f'<td style="padding: 10px 12px; color: #94a3b8; font-style: italic; font-size: 0.82rem; line-height: 1.4; min-width: 250px; max-width: 350px; white-space: normal !important; word-wrap: break-word;">"{clean_rec}"</td>')
         
         row_str = f'<tr style="border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.2s;">{"".join(cells)}</tr>'
         rows_html.append(row_str)
@@ -729,7 +768,7 @@ def render_quick_trade_board(results_list: list, key_prefix: str):
             f'<td style="padding: 10px 12px; color: #ef4444; font-weight: 600;">₹{sl:,.2f}</td>'
             f'<td style="padding: 10px 12px; color: #00e676; font-weight: 600;">₹{target:,.2f}</td>'
             f'<td style="padding: 10px 12px;">{conf_badge}</td>'
-            f'<td style="padding: 10px 12px; color: #94a3b8; font-style: italic; font-size: 0.82rem; line-height: 1.4;">"{clean_rec}"</td>'
+            f'<td style="padding: 10px 12px; color: #94a3b8; font-style: italic; font-size: 0.82rem; line-height: 1.4; min-width: 250px; max-width: 350px; white-space: normal !important; word-wrap: break-word;">"{clean_rec}"</td>'
             f'</tr>'
         )
         rows_html.append(row_str)
@@ -798,6 +837,311 @@ if 'wt_results_by_tf' not in st.session_state:
     st.session_state.wt_results_by_tf = {}
 if 'minervini_results' not in st.session_state:
     st.session_state.minervini_results = None
+# Initialize global status dictionary if not present (shared across all threads/sessions)
+if "MOMENTUM_SCAN_STATUS" not in globals():
+    global MOMENTUM_SCAN_STATUS
+    MOMENTUM_SCAN_STATUS = {
+        "is_running": False,
+        "status_text": "Not started",
+        "progress": 0.0,
+        "monthly_results": None,
+        "weekly_results": None
+    }
+
+def run_background_momentum_scans():
+    """
+    Runs both Monthly and Weekly Momentum scans in a non-blocking background daemon thread.
+    Updates MOMENTUM_SCAN_STATUS and saves the results to daily JSON cache files.
+    """
+    global MOMENTUM_SCAN_STATUS
+    if MOMENTUM_SCAN_STATUS["is_running"]:
+        return
+
+    MOMENTUM_SCAN_STATUS["is_running"] = True
+    MOMENTUM_SCAN_STATUS["status_text"] = "Initializing background scans..."
+    MOMENTUM_SCAN_STATUS["progress"] = 0.0
+
+    def target_runner():
+        import concurrent.futures as _cf
+        import time as _time
+        import json
+        
+        try:
+            today_str = datetime.now(IST_TIMEZONE).strftime("%Y-%m-%d")
+            CRORE = 1_00_00_000
+
+            # 1. Resolve Universe (using ALL NSE for comprehensive coverage)
+            MOMENTUM_SCAN_STATUS["status_text"] = "Resolving ALL NSE listed symbols..."
+            from data_fetcher import get_all_nse_symbols
+            universe = get_all_nse_symbols()
+            
+            if not universe:
+                MOMENTUM_SCAN_STATUS["status_text"] = "Error: Could not resolve NSE symbols universe."
+                MOMENTUM_SCAN_STATUS["is_running"] = False
+                return
+
+            # ==========================================
+            # STEP 1: DOWNLOAD DAILY DATA TO FILTER BY PRICE
+            # ==========================================
+            MOMENTUM_SCAN_STATUS["status_text"] = "Step 1/5 - Downloading daily quotes..."
+            price_map_mm = {}
+            price_map_wm = {}
+            tickers_ns = [f"{s.strip().upper()}.NS" for s in universe]
+            chunk_size = 200
+            ticker_chunks = [tickers_ns[i:i+chunk_size] for i in range(0, len(tickers_ns), chunk_size)]
+            
+            for chunk_idx, chunk in enumerate(ticker_chunks):
+                MOMENTUM_SCAN_STATUS["status_text"] = f"Step 1/5 - Quote chunk {chunk_idx+1}/{len(ticker_chunks)}..."
+                MOMENTUM_SCAN_STATUS["progress"] = 0.05 + (chunk_idx / len(ticker_chunks)) * 0.15
+                try:
+                    q_df = yf.download(tickers=chunk, period="1d", progress=False)
+                    if not q_df.empty and isinstance(q_df.columns, pd.MultiIndex):
+                        price_types = q_df.columns.get_level_values(0).unique().tolist()
+                        cl_s = q_df['Close'].iloc[-1] if 'Close' in price_types else pd.Series(dtype=float)
+                        for tk, pv in cl_s.items():
+                            sym_clean = str(tk).replace(".NS", "").upper()
+                            if not pd.isna(pv):
+                                val = float(pv)
+                                if val >= 100.0:
+                                    price_map_mm[sym_clean] = val
+                                if val >= 200.0:
+                                    price_map_wm[sym_clean] = val
+                except Exception as e:
+                    print(f"Background quote chunk {chunk_idx+1} failed: {e}")
+                _time.sleep(0.3)
+
+            # ==========================================
+            # STEP 2: FETCH MARKET CAPS FOR PASSED STOCKS
+            # ==========================================
+            passed_price_both = list(set(list(price_map_mm.keys()) + list(price_map_wm.keys())))
+            MOMENTUM_SCAN_STATUS["status_text"] = f"Step 2/5 - Fetching market caps for {len(passed_price_both)} stocks..."
+            
+            mcap_map = {}
+            def _fetch_single_mcap(sym):
+                try:
+                    fi = yf.Ticker(f"{sym}.NS").fast_info
+                    mc = getattr(fi, 'market_cap', None) or 0
+                    return sym, mc / CRORE
+                except Exception:
+                    return sym, 0.0
+
+            processed_mcap_count = 0
+            with _cf.ThreadPoolExecutor(max_workers=10) as pool:
+                for sym_r, mcap_cr in pool.map(_fetch_single_mcap, passed_price_both):
+                    mcap_map[sym_r] = mcap_cr
+                    processed_mcap_count += 1
+                    MOMENTUM_SCAN_STATUS["progress"] = 0.20 + (processed_mcap_count / len(passed_price_both)) * 0.15
+                    if processed_mcap_count % 20 == 0:
+                        MOMENTUM_SCAN_STATUS["status_text"] = f"Step 2/5 - Fetched {processed_mcap_count}/{len(passed_price_both)} market caps..."
+
+            # Filter candidates for both scans
+            mm_candidates = [s for s in price_map_mm if mcap_map.get(s, 0.0) >= 3000.0 or mcap_map.get(s, 0.0) == 0.0]
+            wm_candidates = [s for s in price_map_wm if mcap_map.get(s, 0.0) >= 5000.0]
+            
+            # ==========================================
+            # STEP 3: MONTHLY MOMENTUM SCAN
+            # ==========================================
+            MOMENTUM_SCAN_STATUS["status_text"] = f"Step 3/5 - Scanning {len(mm_candidates)} stocks for Monthly Momentum..."
+            mm_results = []
+            monthly_chunk_size = 50
+            mm_chunks = [mm_candidates[i:i+monthly_chunk_size] for i in range(0, len(mm_candidates), monthly_chunk_size)]
+            
+            for chunk_idx, chunk in enumerate(mm_chunks):
+                MOMENTUM_SCAN_STATUS["status_text"] = f"Step 3/5 - Monthly chunk {chunk_idx+1}/{len(mm_chunks)} (Found {len(mm_results)} matches)..."
+                MOMENTUM_SCAN_STATUS["progress"] = 0.35 + (chunk_idx / len(mm_chunks)) * 0.30
+                chunk_ns = [f"{s}.NS" for s in chunk]
+                try:
+                    df_mbulk = yf.download(tickers=chunk_ns, period="10y", interval="1mo", progress=False)
+                    for sym in chunk:
+                        sym_ns = f"{sym}.NS"
+                        try:
+                            if isinstance(df_mbulk.columns, pd.MultiIndex):
+                                all_t_mm = df_mbulk.columns.get_level_values(1).unique().tolist()
+                                matched_m = next((t for t in all_t_mm if t.upper() == sym_ns.upper()), None)
+                                if matched_m is None:
+                                    continue
+                                t_df_m = df_mbulk.xs(matched_m, axis=1, level=1).copy()
+                            else:
+                                if len(chunk_ns) == 1:
+                                    t_df_m = df_mbulk.copy()
+                                else:
+                                    continue
+                            
+                            req_m = ['Open', 'High', 'Low', 'Close', 'Volume']
+                            if not all(col in t_df_m.columns for col in req_m):
+                                continue
+                            t_df_m = t_df_m[req_m].dropna(subset=['Close'])
+                            t_df_m = t_df_m[t_df_m['Volume'] > 0]
+                            if len(t_df_m) < 22:
+                                continue
+                            t_df_m = t_df_m.reset_index()
+                            t_df_m.rename(columns={t_df_m.columns[0]: 'Date'}, inplace=True)
+                            t_df_m['Date'] = pd.to_datetime(t_df_m['Date']).dt.tz_localize(None)
+
+                            res_m = scan_monthly_momentum(sym, t_df_m, market_cap_cr=mcap_map.get(sym, 0.0))
+                            if res_m is not None:
+                                if 'df' in res_m:
+                                    del res_m['df']
+                                mm_results.append(res_m)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"Monthly download chunk {chunk_idx+1} failed: {e}")
+                _time.sleep(0.3)
+
+            # ==========================================
+            # STEP 4: WEEKLY MOMENTUM SCAN
+            # ==========================================
+            MOMENTUM_SCAN_STATUS["status_text"] = f"Step 4/5 - Scanning {len(wm_candidates)} stocks for Weekly Momentum..."
+            wm_results = []
+            weekly_chunk_size = 60
+            wm_chunks = [wm_candidates[i:i+weekly_chunk_size] for i in range(0, len(wm_candidates), weekly_chunk_size)]
+            
+            for chunk_idx, chunk in enumerate(wm_chunks):
+                MOMENTUM_SCAN_STATUS["status_text"] = f"Step 4/5 - Weekly chunk {chunk_idx+1}/{len(wm_chunks)} (Found {len(wm_results)} matches)..."
+                MOMENTUM_SCAN_STATUS["progress"] = 0.65 + (chunk_idx / len(wm_chunks)) * 0.30
+                chunk_ns = [f"{s}.NS" for s in chunk]
+                try:
+                    df_wbulk = yf.download(tickers=chunk_ns, period="3y", interval="1wk", progress=False)
+                    for sym in chunk:
+                        sym_ns = f"{sym}.NS"
+                        try:
+                            if isinstance(df_wbulk.columns, pd.MultiIndex):
+                                all_t_wm = df_wbulk.columns.get_level_values(1).unique().tolist()
+                                matched_w = next((t for t in all_t_wm if t.upper() == sym_ns.upper()), None)
+                                if matched_w is None:
+                                    continue
+                                t_df_w = df_wbulk.xs(matched_w, axis=1, level=1).copy()
+                            else:
+                                if len(chunk_ns) == 1:
+                                    t_df_w = df_wbulk.copy()
+                                else:
+                                    continue
+
+                            req_w = ['Open', 'High', 'Low', 'Close', 'Volume']
+                            if not all(col in t_df_w.columns for col in req_w):
+                                continue
+                            t_df_w = t_df_w[req_w].dropna(subset=['Close'])
+                            t_df_w = t_df_w[t_df_w['Volume'] > 0]
+                            if len(t_df_w) < 22:
+                                continue
+                            t_df_w = t_df_w.reset_index()
+                            t_df_w.rename(columns={t_df_w.columns[0]: 'Date'}, inplace=True)
+                            t_df_w['Date'] = pd.to_datetime(t_df_w['Date']).dt.tz_localize(None)
+
+                            res_w = scan_weekly_momentum(sym, t_df_w, market_cap_cr=mcap_map.get(sym, 0.0))
+                            if res_w is not None:
+                                if 'df' in res_w:
+                                    del res_w['df']
+                                wm_results.append(res_w)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"Weekly download chunk {chunk_idx+1} failed: {e}")
+                _time.sleep(0.3)
+
+            # ==========================================
+            # STEP 5: CACHE & COMPLETE
+            # ==========================================
+            MOMENTUM_SCAN_STATUS["status_text"] = "Step 5/5 - Saving results to PostgreSQL & JSON cache..."
+            MOMENTUM_SCAN_STATUS["progress"] = 0.95
+            
+            # Save to PostgreSQL database
+            try:
+                import database
+                database.save_monthly_momentum_results(today_str, mm_results)
+                database.save_weekly_momentum_results(today_str, wm_results)
+            except Exception as db_save_ex:
+                print(f"Failed to cache momentum results in PostgreSQL: {db_save_ex}")
+            
+            monthly_payload = {"date": today_str, "results": mm_results}
+            with open("monthly_momentum_cache.json", "w") as f:
+                json.dump(monthly_payload, f, indent=2)
+
+            weekly_payload = {"date": today_str, "results": wm_results}
+            with open("weekly_momentum_cache.json", "w") as f:
+                json.dump(weekly_payload, f, indent=2)
+
+            MOMENTUM_SCAN_STATUS["monthly_results"] = mm_results
+            MOMENTUM_SCAN_STATUS["weekly_results"] = wm_results
+            MOMENTUM_SCAN_STATUS["status_text"] = "Complete!"
+            MOMENTUM_SCAN_STATUS["progress"] = 1.0
+            MOMENTUM_SCAN_STATUS["is_running"] = False
+            
+            print(f"Background scans complete: Monthly found {len(mm_results)}, Weekly found {len(wm_results)}.")
+
+        except Exception as err:
+            MOMENTUM_SCAN_STATUS["status_text"] = f"Background scan error: {err}"
+            MOMENTUM_SCAN_STATUS["is_running"] = False
+            print(f"Background momentum scans error: {err}")
+
+    # Launch daemon thread
+    t = threading.Thread(target=target_runner, name="Background_Momentum_Scans", daemon=True)
+    t.start()
+
+# --- Boot Cache Loader / Scanner Trigger ---
+if 'monthly_momentum_results' not in st.session_state:
+    st.session_state.monthly_momentum_results = None
+if 'weekly_momentum_results' not in st.session_state:
+    st.session_state.weekly_momentum_results = None
+
+today_str_check = datetime.now(IST_TIMEZONE).strftime("%Y-%m-%d")
+
+if st.session_state.monthly_momentum_results is None:
+    # 1. Try fetching from PostgreSQL database first
+    try:
+        import database
+        db_results = database.get_cached_monthly_momentum(today_str_check)
+        if db_results:
+            st.session_state.monthly_momentum_results = db_results
+            MOMENTUM_SCAN_STATUS["monthly_results"] = db_results
+            print(f"Loaded today's Monthly Momentum results ({len(db_results)} stocks) from PostgreSQL cache.")
+    except Exception as db_err:
+        print(f"Error loading Monthly Momentum from database: {db_err}")
+
+    # 2. Fallback to local JSON cache file
+    if st.session_state.monthly_momentum_results is None:
+        try:
+            if os.path.exists("monthly_momentum_cache.json"):
+                import json
+                with open("monthly_momentum_cache.json", "r") as f:
+                    data = json.load(f)
+                    if data.get("date") == today_str_check:
+                        st.session_state.monthly_momentum_results = data.get("results")
+                        MOMENTUM_SCAN_STATUS["monthly_results"] = data.get("results")
+                        print(f"Loaded today's Monthly Momentum results ({len(data.get('results'))} stocks) from local JSON fallback cache.")
+        except Exception as e:
+            print(f"Error loading monthly cache on boot: {e}")
+
+if st.session_state.weekly_momentum_results is None:
+    # 1. Try fetching from PostgreSQL database first
+    try:
+        import database
+        db_results = database.get_cached_weekly_momentum(today_str_check)
+        if db_results:
+            st.session_state.weekly_momentum_results = db_results
+            MOMENTUM_SCAN_STATUS["weekly_results"] = db_results
+            print(f"Loaded today's Weekly Momentum results ({len(db_results)} stocks) from PostgreSQL cache.")
+    except Exception as db_err:
+        print(f"Error loading Weekly Momentum from database: {db_err}")
+
+    # 2. Fallback to local JSON cache file
+    if st.session_state.weekly_momentum_results is None:
+        try:
+            if os.path.exists("weekly_momentum_cache.json"):
+                import json
+                with open("weekly_momentum_cache.json", "r") as f:
+                    data = json.load(f)
+                    if data.get("date") == today_str_check:
+                        st.session_state.weekly_momentum_results = data.get("results")
+                        MOMENTUM_SCAN_STATUS["weekly_results"] = data.get("results")
+                        print(f"Loaded today's Weekly Momentum results ({len(data.get('results'))} stocks) from local JSON fallback cache.")
+        except Exception as e:
+            print(f"Error loading weekly cache on boot: {e}")
+
+# Automatically trigger scanning in background if results are missing for today
+if (st.session_state.monthly_momentum_results is None or st.session_state.weekly_momentum_results is None) and not MOMENTUM_SCAN_STATUS["is_running"]:
+    run_background_momentum_scans()
 
 # --- Automatic Daily Database Cache Loader ---
 # CRITICAL: Only hit the database when results are not yet in session state.
@@ -989,35 +1333,49 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 backoff = 2.0
                 while retries <= max_retries:
                     try:
-                        # Fetch quote chunk with threads=False to avoid thread freezing
-                        quotes_df = yf.download(tickers=chunk, period="1d", progress=False, threads=True, timeout=15, auto_adjust=False)
+                        # yfinance 1.x: auto_adjust=True by default, threads param removed
+                        quotes_df = yf.download(tickers=chunk, period="1d", progress=False)
                         if not quotes_df.empty:
+                            # yfinance 1.x multi-ticker: MultiIndex (price_type, ticker)
                             if isinstance(quotes_df.columns, pd.MultiIndex):
-                                close_series = quotes_df['Close'].iloc[-1]
-                                open_series = quotes_df['Open'].iloc[-1] if 'Open' in quotes_df else close_series
-                                volume_series = quotes_df['Volume'].iloc[-1] if 'Volume' in quotes_df else pd.Series(0, index=close_series.index)
-                                high_series = quotes_df['High'].iloc[-1] if 'High' in quotes_df else close_series
-                                low_series = quotes_df['Low'].iloc[-1] if 'Low' in quotes_df else close_series
+                                # Level 0 = price type (Close/Open/etc), Level 1 = ticker symbol
+                                price_types = quotes_df.columns.get_level_values(0).unique().tolist()
+                                tickers_in_idx = quotes_df.columns.get_level_values(1).unique().tolist()
+                                # Build per-field Series indexed by ticker (with .NS suffix preserved)
+                                def _get_field_series(field):
+                                    if field in price_types:
+                                        s = quotes_df[field].iloc[-1]
+                                        return s
+                                    return pd.Series(dtype=float)
+                                close_series = _get_field_series('Close')
+                                open_series = _get_field_series('Open')
+                                volume_series = _get_field_series('Volume')
+                                high_series = _get_field_series('High')
+                                low_series = _get_field_series('Low')
                             else:
-                                close_series = pd.Series({chunk[0]: quotes_df['Close'].iloc[-1]})
-                                open_series = pd.Series({chunk[0]: quotes_df['Open'].iloc[-1]}) if 'Open' in quotes_df else close_series
-                                volume_series = pd.Series({chunk[0]: quotes_df['Volume'].iloc[-1]}) if 'Volume' in quotes_df else pd.Series({chunk[0]: 0})
-                                high_series = pd.Series({chunk[0]: quotes_df['High'].iloc[-1]}) if 'High' in quotes_df else close_series
-                                low_series = pd.Series({chunk[0]: quotes_df['Low'].iloc[-1]}) if 'Low' in quotes_df else close_series
-                                
-                            # Map prices back to plain symbols
+                                # Single ticker fallback
+                                ticker_key = chunk[0]
+                                close_series = pd.Series({ticker_key: quotes_df['Close'].iloc[-1]})
+                                open_series = pd.Series({ticker_key: quotes_df['Open'].iloc[-1]}) if 'Open' in quotes_df else close_series
+                                volume_series = pd.Series({ticker_key: quotes_df['Volume'].iloc[-1]}) if 'Volume' in quotes_df else pd.Series({ticker_key: 0})
+                                high_series = pd.Series({ticker_key: quotes_df['High'].iloc[-1]}) if 'High' in quotes_df else close_series
+                                low_series = pd.Series({ticker_key: quotes_df['Low'].iloc[-1]}) if 'Low' in quotes_df else close_series
+
+                            # Map prices back to plain symbols (strip .NS suffix)
+                            # IMPORTANT: index still has .NS suffix, so use k directly for lookup
                             for k, v in close_series.items():
-                                clean_k = k.replace(".NS", "").upper()
-                                if not pd.isna(v) and v > 0:
+                                clean_k = str(k).replace(".NS", "").upper()
+                                if not pd.isna(v) and float(v) > 0:
                                     close_price_map[clean_k] = float(v)
-                                    if clean_k in open_series.index and not pd.isna(open_series[clean_k]):
-                                        open_price_map[clean_k] = float(open_series[clean_k])
-                                    if clean_k in volume_series.index and not pd.isna(volume_series[clean_k]):
-                                        volume_map[clean_k] = int(volume_series[clean_k])
-                                    if clean_k in high_series.index and not pd.isna(high_series[clean_k]):
-                                        high_price_map[clean_k] = float(high_series[clean_k])
-                                    if clean_k in low_series.index and not pd.isna(low_series[clean_k]):
-                                        low_price_map[clean_k] = float(low_series[clean_k])
+                                    # Use original k (with .NS) to look up in the other series
+                                    if k in open_series.index and not pd.isna(open_series[k]):
+                                        open_price_map[clean_k] = float(open_series[k])
+                                    if k in volume_series.index and not pd.isna(volume_series[k]):
+                                        volume_map[clean_k] = int(volume_series[k])
+                                    if k in high_series.index and not pd.isna(high_series[k]):
+                                        high_price_map[clean_k] = float(high_series[k])
+                                    if k in low_series.index and not pd.isna(low_series[k]):
+                                        low_price_map[clean_k] = float(low_series[k])
                             # Successfully loaded chunk
                             break
                         else:
@@ -1068,23 +1426,38 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 status_box.text(f"Downloading historical data: Chunk {chunk_idx+1}/{len(sym_chunks)}...")
                 chunk_ns = [f"{s.strip().upper()}.NS" for s in chunk]
                 try:
-                    df_bulk = yf.download(tickers=chunk_ns, period=f"{LOOKBACK_DAYS}d", interval="1d", group_by="ticker", progress=False, threads=True, timeout=15, auto_adjust=False)
+                    # yfinance 1.x: group_by and threads params removed; MultiIndex is now (price_type, ticker)
+                    df_bulk = yf.download(tickers=chunk_ns, period=f"{LOOKBACK_DAYS}d", interval="1d", progress=False)
                     for sym in chunk:
                         sym_ns = f"{sym.strip().upper()}.NS"
-                        if sym_ns in df_bulk:
-                            ticker_df = df_bulk[sym_ns].copy()
-                            if isinstance(ticker_df.columns, pd.MultiIndex):
-                                ticker_df.columns = ticker_df.columns.get_level_values(0)
+                        try:
+                            if isinstance(df_bulk.columns, pd.MultiIndex):
+                                # yfinance 1.x multi-ticker: columns are (price_type, ticker)
+                                # Find the ticker in level 1
+                                all_tickers_bulk = df_bulk.columns.get_level_values(1).unique().tolist()
+                                matched = next((t for t in all_tickers_bulk if t.upper() == sym_ns.upper()), None)
+                                if matched is None:
+                                    continue
+                                # Extract slice for this ticker across all price types
+                                ticker_df = df_bulk.xs(matched, axis=1, level=1).copy()
+                            else:
+                                # Single ticker download (fallback)
+                                if len(chunk_ns) == 1:
+                                    ticker_df = df_bulk.copy()
+                                else:
+                                    continue
+
                             required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
                             if all(col in ticker_df.columns for col in required_cols):
                                 ticker_df = ticker_df[required_cols].dropna(subset=['Close'])
                                 ticker_df = ticker_df[ticker_df['Volume'] > 0]
                                 if not ticker_df.empty:
-                                    ticker_df = ticker_df[ticker_df['Volume'] > 0] # clean up
                                     ticker_df = ticker_df.reset_index()
                                     ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
-                                    ticker_df['Date'] = pd.to_datetime(ticker_df['Date'])
+                                    ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
                                     bulk_data[sym.strip().upper()] = ticker_df
+                        except Exception as sym_ex:
+                            print(f"Error extracting {sym_ns} from bulk download: {sym_ex}")
                 except Exception as chunk_ex:
                     print(f"Error downloading parallel chunk {chunk_idx+1}: {chunk_ex}")
         
@@ -1382,7 +1755,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                     else:
                         try:
                             ticker_obj = yf.Ticker(formatted_sym)
-                            mcap = ticker_obj.fast_info.get("market_cap", 0)
+                            mcap = getattr(ticker_obj.fast_info, 'market_cap', None) or 0
                             if mcap and mcap > 0:
                                 mcap_crores = mcap / 1e7
                             else:
@@ -1414,7 +1787,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                     else:
                         try:
                             ticker_obj = yf.Ticker(formatted_sym)
-                            mcap = ticker_obj.fast_info.get("market_cap", 0)
+                            mcap = getattr(ticker_obj.fast_info, 'market_cap', None) or 0
                             if mcap and mcap > 0:
                                 mcap_crores = mcap / 1e7
                             else:
@@ -1540,9 +1913,9 @@ with st.sidebar.expander("🎓 Institutional Buy Signals Guide", expanded=False)
 
 # --- MAIN INTERFACE TABS ---
 try:
-    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_history = st.tabs([
-        "📊 Scanner Results", 
-        "📈 Stock Detail", 
+    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_monthly_mom, tab_weekly_mom, tab_history = st.tabs([
+        "📊 Scanner Results",
+        "📈 Stock Detail",
         "📋 My Watchlist",
         "🤖 AI Chart Pattern Detector",
         "🌀 Coiled Spring Squeeze",
@@ -1552,6 +1925,8 @@ try:
         "🔄 MA Crossovers",
         "🌊 Wave Trend",
         "🏆 Minervini Stage-2",
+        "📅 Monthly Momentum",
+        "📈 Weekly Momentum",
         "📅 Scan History"
     ])
 except Exception as tab_err:
@@ -1969,23 +2344,27 @@ with tab_watchlist:
         
         with st.spinner("Fetching real-time quotes for watchlisted assets..."):
             try:
-                # Fetch only 1 day to query CMP
-                prices_df = yf.download(tickers=tickers_list, period="1d", progress=False, auto_adjust=False)
+                # yfinance 1.x: auto_adjust=True is default, auto_adjust=False is deprecated
+                prices_df = yf.download(tickers=tickers_list, period="1d", progress=False)
                 if not prices_df.empty:
-                    # Clean columns if response is MultiIndexed
+                    # yfinance 1.x multi-ticker: MultiIndex (price_type, ticker)
                     if isinstance(prices_df.columns, pd.MultiIndex):
-                        close_prices = prices_df['Close'].iloc[-1]
+                        close_prices = prices_df['Close'].iloc[-1]  # Series with .NS ticker index
                     else:
-                        close_prices = {tickers_list[0]: prices_df['Close'].iloc[-1]}
-                        
-                    # Build lookup maps
+                        close_prices = prices_df['Close'].iloc[-1]  # scalar for single ticker
+                        close_prices = {tickers_list[0]: close_prices}
+
+                    # Build lookup maps (strip .NS from keys)
                     if isinstance(close_prices, pd.Series):
                         for k, v in close_prices.items():
-                            clean_k = k.replace(".NS", "").upper()
-                            cmp_dict[clean_k] = float(v)
-                    else:
-                        clean_key = tickers_list[0].replace(".NS", "").upper()
-                        cmp_dict[clean_key] = float(close_prices)
+                            clean_k = str(k).replace(".NS", "").upper()
+                            if not pd.isna(v) and float(v) > 0:
+                                cmp_dict[clean_k] = float(v)
+                    elif isinstance(close_prices, dict):
+                        for k, v in close_prices.items():
+                            clean_k = str(k).replace(".NS", "").upper()
+                            if v and not pd.isna(v):
+                                cmp_dict[clean_k] = float(v)
             except Exception as quote_ex:
                 st.warning("⚠️ Could not fetch real-time quotes. Using historical entry price for watchlist CMP.")
                 
@@ -2992,13 +3371,24 @@ with tab_wavetrend:
             for chunk in sym_chunks:
                 chunk_ns = [f"{s}.NS" for s in chunk]
                 try:
-                    df_bulk = yf.download(tickers=chunk_ns, period=period, interval=interval, group_by="ticker", progress=False, threads=True, timeout=12, auto_adjust=False)
+                    # yfinance 1.x: group_by, threads, auto_adjust=False removed
+                    df_bulk = yf.download(tickers=chunk_ns, period=period, interval=interval, progress=False)
                     for sym in chunk:
                         sym_ns = f"{sym}.NS"
-                        if sym_ns in df_bulk:
-                            ticker_df = df_bulk[sym_ns].copy()
-                            if isinstance(ticker_df.columns, pd.MultiIndex):
-                                ticker_df.columns = ticker_df.columns.get_level_values(0)
+                        try:
+                            if isinstance(df_bulk.columns, pd.MultiIndex):
+                                # yfinance 1.x: (price_type, ticker) MultiIndex
+                                all_tickers_wt = df_bulk.columns.get_level_values(1).unique().tolist()
+                                matched_wt = next((t for t in all_tickers_wt if t.upper() == sym_ns.upper()), None)
+                                if matched_wt is None:
+                                    continue
+                                ticker_df = df_bulk.xs(matched_wt, axis=1, level=1).copy()
+                            else:
+                                if len(chunk_ns) == 1:
+                                    ticker_df = df_bulk.copy()
+                                else:
+                                    continue
+
                             required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
                             if all(col in ticker_df.columns for col in required_cols):
                                 ticker_df = ticker_df[required_cols].dropna(subset=['Close'])
@@ -3007,12 +3397,14 @@ with tab_wavetrend:
                                 if len(ticker_df) >= 40:
                                     ticker_df = ticker_df.reset_index()
                                     ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
-                                    ticker_df['Date'] = pd.to_datetime(ticker_df['Date'])
-                                    
+                                    ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
+
                                     wt_res = scan_wt_cross(sym, ticker_df)
                                     if wt_res is not None:
                                         wt_res['timeframe'] = wt_timeframe
                                         wt_tf_results.append(wt_res)
+                        except Exception as sym_wt_ex:
+                            print(f"Error extracting {sym_ns} from WaveTrend bulk download: {sym_wt_ex}")
                 except Exception as chunk_ex:
                     print(f"Error bulk downloading WaveTrend chunk: {chunk_ex}")
             
@@ -3459,3 +3851,623 @@ with tab_history:
                 sorted_hwt = sorted(h_wt, key=lambda x: float(x.get('wt_value') or 0.0))
                 st.markdown(f"**🌊 WaveTrend Signals on {selected_date_str} ({len(sorted_hwt)})**")
                 render_unified_strategy_table(sorted_hwt, "wavetrend", f"hist_wt_{selected_date_str}")
+
+
+# ==============================================================================
+# TAB: MONTHLY MOMENTUM SCANNER (EMA Stack + ROC + RSI + Volume > Vol SMA)
+# ==============================================================================
+with tab_monthly_mom:
+    st.markdown("### 📅 Monthly Momentum Scanner")
+    st.markdown(
+        "<p style='font-size:0.9rem; color:#94a3b8;'>Scans <b>all NSE-listed stocks</b> (Market Cap ≥ ₹3000 Cr, Price ≥ ₹100) for "
+        "the Chartink-style <b>Monthly EMA Alignment</b> momentum strategy. All conditions are evaluated on <b>Monthly candles</b>:</p>",
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        """
+        <div style='display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px;'>
+          <span style='background:rgba(0,230,118,0.12); color:#00e676; border:1px solid rgba(0,230,118,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>Close &gt; EMA(8)</span>
+          <span style='background:rgba(41,182,246,0.12); color:#29b6f6; border:1px solid rgba(41,182,246,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>EMA(8) &gt; EMA(12)</span>
+          <span style='background:rgba(41,182,246,0.12); color:#29b6f6; border:1px solid rgba(41,182,246,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>EMA(12) &gt; EMA(20)</span>
+          <span style='background:rgba(255,160,0,0.12); color:#ffa000; border:1px solid rgba(255,160,0,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>ROC(6M): 10–80%</span>
+          <span style='background:rgba(171,71,188,0.12); color:#ba68c8; border:1px solid rgba(171,71,188,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>RSI(14M): 55–85</span>
+          <span style='background:rgba(239,68,68,0.12); color:#ef4444; border:1px solid rgba(239,68,68,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>Vol &gt; SMA(Vol, 12M)</span>
+          <span style='background:rgba(0,229,255,0.12); color:#00e5ff; border:1px solid rgba(0,229,255,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>MCap ≥ ₹3000 Cr</span>
+          <span style='background:rgba(148,163,184,0.12); color:#94a3b8; border:1px solid rgba(148,163,184,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>Price ≥ ₹100</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    st.markdown("---")
+
+    # --- Run Scan Button ---
+    mm_col1, mm_col2 = st.columns([1, 3])
+    with mm_col1:
+        run_mm_scan = st.button("🔍 Run Monthly Momentum Scan", use_container_width=True, key="run_monthly_mom_btn")
+    with mm_col2:
+        st.info("⏱️ This scan downloads ~5 years of **monthly** data for all NSE stocks. It may take 3–8 minutes for All NSE universe. Use Nifty 500 for faster results.")
+
+    # Check if background thread has finished and results are available
+    if st.session_state.monthly_momentum_results is None and MOMENTUM_SCAN_STATUS["monthly_results"] is not None:
+        st.session_state.monthly_momentum_results = MOMENTUM_SCAN_STATUS["monthly_results"]
+
+    mm_data = st.session_state.monthly_momentum_results
+
+    # --- Render Background Scan Progress Inside Monthly Tab ---
+    if MOMENTUM_SCAN_STATUS["is_running"] and mm_data is None:
+        st.markdown(
+            f"""
+            <div class="glass-card" style="padding:22px; border:1px solid rgba(0,229,255,0.25); background:rgba(9,13,22,0.6); border-radius:12px; margin-bottom:20px; box-shadow:0 8px 32px 0 rgba(0,0,0,0.37);">
+                <h4 style="color:#00e5ff; margin:0 0 10px 0; display:flex; align-items:center; gap:8px;">
+                    <span style="display:inline-block; animation: spin 2s linear infinite;">🔄</span> Background Momentum Scan Active...
+                </h4>
+                <p style="font-size:0.9rem; color:#94a3b8; margin:0 0 15px 0;">
+                    Monthly & Weekly Momentum scanners are running automatically in the background. You can browse all other tabs normally!
+                </p>
+                <div style="font-size:0.85rem; color:#e2e8f0; font-weight:600; margin-bottom:8px;">
+                    Current Status: <span style="color:#00e5ff;">{MOMENTUM_SCAN_STATUS["status_text"]}</span>
+                </div>
+            </div>
+            <style>
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        st.progress(MOMENTUM_SCAN_STATUS["progress"])
+        if st.button("🔄 Refresh Scanner Status", key="refresh_mm_status_btn"):
+            st.rerun()
+
+    if run_mm_scan:
+        if MOMENTUM_SCAN_STATUS["is_running"]:
+            st.warning("⚠️ Scanners are already running in the background! Please wait for them to complete.")
+        else:
+            import concurrent.futures as _cf
+        import time as _time
+
+        # Resolve universe
+        from data_fetcher import get_index_stocks, get_all_nse_symbols
+        if "NIFTY 50" in universe_selection:
+            mm_universe = get_index_stocks("NIFTY 50")
+        elif "NIFTY 100" in universe_selection:
+            mm_universe = get_index_stocks("NIFTY 100")
+        else:
+            mm_universe = get_all_nse_symbols()
+
+        mm_results = []
+        mm_prog = st.progress(0)
+        mm_status = st.empty()
+        total_mm = len(mm_universe)
+
+        # ---- Step 1: Batch fetch market caps via yf.download 1d ----
+        mm_status.text("Step 1/3 — Fetching real-time quotes & market caps...")
+        mcap_map = {}   # symbol -> market_cap in crore
+        price_map_mm = {}  # symbol -> CMP
+        CRORE = 1_00_00_000  # 1 crore INR
+
+        mm_tickers_ns = [f"{s.strip().upper()}.NS" for s in mm_universe]
+        mm_chunk_size = 200
+        mm_ticker_chunks = [mm_tickers_ns[i:i+mm_chunk_size] for i in range(0, len(mm_tickers_ns), mm_chunk_size)]
+
+        for mm_cidx, mm_chunk in enumerate(mm_ticker_chunks):
+            mm_status.text(f"Step 1/3 — Quotes chunk {mm_cidx+1}/{len(mm_ticker_chunks)}...")
+            try:
+                q_df = yf.download(tickers=mm_chunk, period="1d", progress=False)
+                if not q_df.empty and isinstance(q_df.columns, pd.MultiIndex):
+                    price_types_mm = q_df.columns.get_level_values(0).unique().tolist()
+                    cl_s = q_df['Close'].iloc[-1] if 'Close' in price_types_mm else pd.Series(dtype=float)
+                    for tk, pv in cl_s.items():
+                        sym_clean = str(tk).replace(".NS", "").upper()
+                        if not pd.isna(pv) and float(pv) >= 100.0:
+                            price_map_mm[sym_clean] = float(pv)
+            except Exception as e:
+                print(f"MM quote chunk {mm_cidx+1} failed: {e}")
+            _time.sleep(0.5)
+
+        # Filter by price >= 100 first
+        mm_price_passed = [s for s in mm_universe if s.strip().upper() in price_map_mm]
+        mm_status.text(f"Step 1/3 — {len(mm_price_passed)} stocks pass price ≥ ₹100 filter. Fetching market caps...")
+
+        # ---- Step 2: Fetch market caps in parallel using yf.Ticker.fast_info ----
+        def _fetch_mcap(sym):
+            try:
+                fi = yf.Ticker(f"{sym.strip().upper()}.NS").fast_info
+                # yfinance 1.x: FastInfo is NOT a dict — use attribute access, not .get()
+                mc = getattr(fi, 'market_cap', None) or 0
+                return sym.strip().upper(), mc / CRORE  # INR -> crore
+            except Exception:
+                return sym.strip().upper(), 0.0
+
+        mm_status.text(f"Step 2/3 — Checking market caps for {len(mm_price_passed)} stocks (parallel)...")
+        with _cf.ThreadPoolExecutor(max_workers=10) as pool:
+            for sym_r, mcap_cr in pool.map(_fetch_mcap, mm_price_passed):
+                # Include stock if MCap >= 3000 Cr OR if we couldn't fetch MCap (mcap_cr == 0)
+                if mcap_cr >= 3000.0 or mcap_cr == 0.0:
+                    mcap_map[sym_r] = mcap_cr
+
+        mm_mcap_passed = list(mcap_map.keys())
+        mm_status.text(f"Step 2/3 — {len(mm_mcap_passed)} stocks pass MCap ≥ ₹3000 Cr filter. Downloading monthly data...")
+
+        # ---- Step 3: Download monthly OHLCV in bulk and scan ----
+        mm_monthly_chunk_size = 50
+        mm_sym_chunks = [mm_mcap_passed[i:i+mm_monthly_chunk_size] for i in range(0, len(mm_mcap_passed), mm_monthly_chunk_size)]
+        total_chunks_mm = len(mm_sym_chunks)
+
+        for c_idx, c_chunk in enumerate(mm_sym_chunks):
+            mm_status.text(f"Step 3/3 — Scanning monthly data: chunk {c_idx+1}/{total_chunks_mm} ({len(mm_results)} matches so far)...")
+            mm_prog.progress((c_idx + 1) / max(total_chunks_mm, 1))
+            chunk_ns_mm = [f"{s.strip().upper()}.NS" for s in c_chunk]
+            try:
+                df_mbulk = yf.download(
+                    tickers=chunk_ns_mm,
+                    period="10y",
+                    interval="1mo",
+                    progress=False
+                )
+                for sym_m in c_chunk:
+                    sym_ns_m = f"{sym_m.strip().upper()}.NS"
+                    try:
+                        if isinstance(df_mbulk.columns, pd.MultiIndex):
+                            all_t_mm = df_mbulk.columns.get_level_values(1).unique().tolist()
+                            matched_m = next((t for t in all_t_mm if t.upper() == sym_ns_m.upper()), None)
+                            if matched_m is None:
+                                continue
+                            t_df_m = df_mbulk.xs(matched_m, axis=1, level=1).copy()
+                        else:
+                            if len(chunk_ns_mm) == 1:
+                                t_df_m = df_mbulk.copy()
+                            else:
+                                continue
+
+                        req_m = ['Open', 'High', 'Low', 'Close', 'Volume']
+                        if not all(col in t_df_m.columns for col in req_m):
+                            continue
+                        t_df_m = t_df_m[req_m].dropna(subset=['Close'])
+                        t_df_m = t_df_m[t_df_m['Volume'] > 0]
+                        if len(t_df_m) < 22:
+                            continue
+                        t_df_m = t_df_m.reset_index()
+                        t_df_m.rename(columns={t_df_m.columns[0]: 'Date'}, inplace=True)
+                        t_df_m['Date'] = pd.to_datetime(t_df_m['Date']).dt.tz_localize(None)
+
+                        res_m = scan_monthly_momentum(
+                            sym_m.strip().upper(),
+                            t_df_m,
+                            market_cap_cr=mcap_map.get(sym_m.strip().upper(), 0.0)
+                        )
+                        if res_m is not None:
+                            mm_results.append(res_m)
+                    except Exception as sym_m_ex:
+                        pass
+            except Exception as c_ex:
+                print(f"Monthly momentum chunk {c_idx+1} failed: {c_ex}")
+            _time.sleep(0.3)
+
+        mm_prog.progress(1.0)
+        st.session_state.monthly_momentum_results = mm_results
+        mm_data = mm_results
+        mm_status.text(f"✅ Monthly Momentum scan complete! Found {len(mm_results)} qualifying stocks.")
+        st.toast(f"📅 Monthly Momentum scan done — {len(mm_results)} stocks matched!", icon="✅")
+
+    # ---- Display Results ----
+    if mm_data is None:
+        st.info("💡 Click **Run Monthly Momentum Scan** above to start the scan.")
+    elif len(mm_data) == 0:
+        st.warning("⚠️ No stocks matched all Monthly Momentum conditions in the selected universe. Try using a larger universe (All NSE).")
+    else:
+        sorted_mm = sorted(mm_data, key=lambda x: x.get('momentum_score', 0.0), reverse=True)
+
+        # Metrics row
+        mm_m1, mm_m2, mm_m3, mm_m4 = st.columns(4)
+        mm_m1.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Stocks Matched</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{len(sorted_mm)}</h3></div>', unsafe_allow_html=True)
+        mm_m2.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg Momentum Score</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{sum(r["momentum_score"] for r in sorted_mm)/len(sorted_mm):.1f} pts</h3></div>', unsafe_allow_html=True)
+        mm_m3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg Monthly RSI</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">{sum(r["rsi_monthly"] for r in sorted_mm)/len(sorted_mm):.1f}</h3></div>', unsafe_allow_html=True)
+        mm_m4.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg 6M ROC</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{sum(r["roc6"] for r in sorted_mm)/len(sorted_mm):.1f}%</h3></div>', unsafe_allow_html=True)
+        st.markdown("---")
+
+        # CSV Export
+        mm_export = [{
+            "Symbol": r['symbol'], "Company": r['company_name'],
+            "CMP (₹)": r['cmp'], "MCap (Cr)": r['market_cap_cr'],
+            "1M Return (%)": r.get('return_1m', r.get('day_change_pct', 0.0)),
+            "EMA8": r['ema8'], "EMA12": r['ema12'], "EMA20": r['ema20'],
+            "ROC 6M (%)": r['roc6'], "RSI 14M": r['rsi_monthly'],
+            "Volume": r['volume'], "Vol SMA12": r['vol_sma12'],
+            "Momentum Score": r['momentum_score'],
+            "Buy Price (₹)": r['buy_price'], "Stop Loss (₹)": r['exit_price'], "Target (₹)": r['target_price'],
+            "Confidence": r['confidence'],
+        } for r in sorted_mm]
+        mm_csv = pd.DataFrame(mm_export).to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Monthly Momentum Results (CSV)",
+            data=mm_csv,
+            file_name=f"monthly_momentum_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            key="dl_monthly_mom_csv"
+        )
+        st.markdown("---")
+
+        # Rich table
+        st.markdown("### 📊 Monthly Momentum Trade Execution Matrix")
+        mm_rows_html = []
+        from utils import get_day_change_badge_html, get_signal_badge_html
+        w_df_mm = watchlist.load_watchlist()
+        wl_syms_mm = set(w_df_mm['symbol'].str.upper().unique()) if not w_df_mm.empty else set()
+
+        for mm_idx, r in enumerate(sorted_mm):
+            cmp_v = r['cmp']; buy_v = r['buy_price']; sl_v = r['exit_price']; tgt_v = r['target_price']
+            conf_v = r.get('confidence', 'Medium')
+            clean_conf_mm = conf_v.split(" (")[0] if " (" in conf_v else conf_v
+            conf_color_mm = "#ef4444" if "Low" in clean_conf_mm else "#ffa000" if "Medium" in clean_conf_mm else "#00e676"
+            conf_badge_mm = f'<span class="custom-badge" style="background:rgba({"0,230,118" if "High" in clean_conf_mm else "255,160,0" if "Medium" in clean_conf_mm else "239,68,68"},0.12); color:{conf_color_mm}; border:1px solid {conf_color_mm}; font-size:0.75rem; padding:2px 6px; border-radius:4px;">{clean_conf_mm}</span>'
+
+            is_wl_mm = r['symbol'] in wl_syms_mm
+            if is_wl_mm:
+                wl_cell_mm = f'<td style="padding:8px 10px; text-align:center;"><span style="color:#00e676;">☑️</span> <a href="/?remove_from_watchlist={r["symbol"]}" target="_self" style="color:#ef4444; font-size:0.72rem;">[Remove]</a></td>'
+            else:
+                wl_cell_mm = f'<td style="padding:8px 10px; text-align:center;"><a href="/?add_to_watchlist={r["symbol"]}&price={buy_v}&score={r.get("momentum_score",50)}" target="_self" style="color:#94a3b8; font-size:1.1rem;">☐</a> <a href="/?add_to_watchlist={r["symbol"]}&price={buy_v}&score={r.get("momentum_score",50)}" target="_self" style="color:#00e676; font-size:0.72rem;">[Add]</a></td>'
+
+            chg_b = get_day_change_badge_html(r.get('return_1m', r.get('day_change_pct', 0.0)))
+            roc_color = "#00e676" if r['roc6'] >= 30 else "#ffa000" if r['roc6'] >= 15 else "#29b6f6"
+            rsi_color = "#00e676" if 60 <= r['rsi_monthly'] <= 75 else "#ffa000"
+            vol_ratio_mm = r['volume'] / r['vol_sma12'] if r['vol_sma12'] > 0 else 1.0
+            mcap_fmt = f"₹{r['market_cap_cr']:,.0f} Cr" if r['market_cap_cr'] > 0 else "—"
+
+            clean_rec_mm = extract_clean_recommendation(r.get('recommendation', ''))
+
+            mm_rows_html.append(
+                f'<tr style="border-bottom:1px solid rgba(255,255,255,0.04); transition:background 0.2s;">'
+                f'{wl_cell_mm}'
+                f'<td style="padding:8px 10px; font-weight:bold; color:#29b6f6;"><a href="https://in.tradingview.com/chart/?symbol=NSE:{r["symbol"]}" target="_blank" style="color:#29b6f6; text-decoration:none;">{r["symbol"]}</a></td>'
+                f'<td style="padding:8px 10px; color:#94a3b8; font-size:0.8rem;">{r.get("company_name", "")}</td>'
+                f'<td style="padding:8px 10px; color:#e2e8f0; font-weight:500;">₹{cmp_v:,.2f}</td>'
+                f'<td style="padding:8px 10px;">{chg_b}</td>'
+                f'<td style="padding:8px 10px; color:#00e5ff; font-size:0.82rem;">{mcap_fmt}</td>'
+                f'<td style="padding:8px 10px; color:#38bdf8;">₹{r["ema8"]:,.2f}</td>'
+                f'<td style="padding:8px 10px; color:#7dd3fc;">₹{r["ema12"]:,.2f}</td>'
+                f'<td style="padding:8px 10px; color:#94a3b8;">₹{r["ema20"]:,.2f}</td>'
+                f'<td style="padding:8px 10px; color:{roc_color}; font-weight:600;">{r["roc6"]:+.1f}%</td>'
+                f'<td style="padding:8px 10px; color:{rsi_color}; font-weight:600;">{r["rsi_monthly"]:.1f}</td>'
+                f'<td style="padding:8px 10px; color:#ffa000; font-weight:600;">{vol_ratio_mm:.2f}x</td>'
+                f'<td style="padding:8px 10px; color:#00e676; font-weight:700;">{r.get("momentum_score", 0):.0f}</td>'
+                f'<td style="padding:8px 10px; color:#cbd5e1; font-weight:600;">₹{buy_v:,.2f}</td>'
+                f'<td style="padding:8px 10px; color:#ef4444; font-weight:600;">₹{sl_v:,.2f}</td>'
+                f'<td style="padding:8px 10px; color:#00e676; font-weight:600;">₹{tgt_v:,.2f}</td>'
+                f'<td style="padding:8px 10px;">{conf_badge_mm}</td>'
+                f'<td style="padding:8px 10px; color:#94a3b8; font-style:italic; font-size:0.8rem; line-height:1.4; min-width: 250px; max-width: 350px; white-space: normal !important; word-wrap: break-word;">"{clean_rec_mm}"</td>'
+                f'</tr>'
+            )
+
+        mm_headers = [
+            "Watchlist", "Symbol", "Company", "CMP", "1M Return %", "MCap",
+            "EMA 8", "EMA 12", "EMA 20", "ROC 6M", "RSI 14M", "Vol Ratio", "Score",
+            "Buy Price", "Stop Loss", "Target", "Confidence", "Analysis"
+        ]
+        mm_header_html = "".join([f'<th style="padding:8px 10px; white-space:nowrap;">{h}</th>' for h in mm_headers])
+
+        st.markdown(
+            f'<div class="glass-card" style="padding:18px; border:1px solid rgba(0,229,255,0.2); background:rgba(9,13,22,0.55); border-radius:12px;">'
+            f'<div style="overflow-x:auto;">'
+            f'<table style="width:100%; border-collapse:collapse; text-align:left; font-size:0.83rem; color:#cbd5e1; font-family:Outfit,sans-serif;">'
+            f'<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1); color:#00e5ff; font-weight:bold; background:rgba(0,229,255,0.05); font-size:0.78rem; text-transform:uppercase;">'
+            f'{mm_header_html}</tr></thead>'
+            f'<tbody>{chr(10).join(mm_rows_html)}</tbody>'
+            f'</table></div></div>',
+            unsafe_allow_html=True
+        )
+
+
+# ==============================================================================
+# TAB: WEEKLY MOMENTUM SCANNER
+# ==============================================================================
+with tab_weekly_mom:
+    st.markdown("### 📈 Weekly Momentum Breakout Scanner")
+    st.markdown(
+        "<p style='font-size:0.9rem; color:#94a3b8;'>Scans <b>all NSE-listed stocks</b> (MCap ≥ ₹5000 Cr, Price ≥ ₹200) for the "
+        "Chartink-style <b>Weekly Momentum Breakout</b> strategy. All conditions on <b>Weekly candles</b>:</p>",
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        """
+        <div style='display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px;'>
+          <span style='background:rgba(0,230,118,0.12); color:#00e676; border:1px solid rgba(0,230,118,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>Vol &gt; SMA(Vol, 20W)</span>
+          <span style='background:rgba(41,182,246,0.12); color:#29b6f6; border:1px solid rgba(41,182,246,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>Close &gt; ₹200</span>
+          <span style='background:rgba(41,182,246,0.12); color:#29b6f6; border:1px solid rgba(41,182,246,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>Close &gt; Prev Week Close</span>
+          <span style='background:rgba(0,229,255,0.12); color:#00e5ff; border:1px solid rgba(0,229,255,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>Open &gt; Prev Week Close</span>
+          <span style='background:rgba(255,160,0,0.12); color:#ffa000; border:1px solid rgba(255,160,0,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>CCI(20W) &gt; 90</span>
+          <span style='background:rgba(171,71,188,0.12); color:#ba68c8; border:1px solid rgba(171,71,188,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>RSI(14W) &gt; 60</span>
+          <span style='background:rgba(239,68,68,0.12); color:#ef4444; border:1px solid rgba(239,68,68,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>Close &gt; SMA(Close, 20W)</span>
+          <span style='background:rgba(0,229,255,0.12); color:#00e5ff; border:1px solid rgba(0,229,255,0.3); padding:4px 12px; border-radius:20px; font-size:0.8rem; font-weight:600;'>MCap ≥ ₹5000 Cr</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    st.markdown("---")
+
+    wm_col1, wm_col2 = st.columns([1, 3])
+    with wm_col1:
+        run_wm_scan = st.button("🔍 Run Weekly Momentum Scan", use_container_width=True, key="run_weekly_mom_btn")
+    with wm_col2:
+        st.info("⏱️ Downloads weekly OHLCV data for all NSE stocks with MCap ≥ ₹5000 Cr. Typical run: **2–5 minutes**.")
+
+    # Check if background thread has finished and results are available
+    if st.session_state.weekly_momentum_results is None and MOMENTUM_SCAN_STATUS["weekly_results"] is not None:
+        st.session_state.weekly_momentum_results = MOMENTUM_SCAN_STATUS["weekly_results"]
+
+    wm_data = st.session_state.weekly_momentum_results
+
+    # --- Render Background Scan Progress Inside Weekly Tab ---
+    if MOMENTUM_SCAN_STATUS["is_running"] and wm_data is None:
+        st.markdown(
+            f"""
+            <div class="glass-card" style="padding:22px; border:1px solid rgba(0,230,118,0.25); background:rgba(9,13,22,0.6); border-radius:12px; margin-bottom:20px; box-shadow:0 8px 32px 0 rgba(0,0,0,0.37);">
+                <h4 style="color:#00e676; margin:0 0 10px 0; display:flex; align-items:center; gap:8px;">
+                    <span style="display:inline-block; animation: spin 2s linear infinite;">🔄</span> Background Momentum Scan Active...
+                </h4>
+                <p style="font-size:0.9rem; color:#94a3b8; margin:0 0 15px 0;">
+                    Monthly & Weekly Momentum scanners are running automatically in the background. You can browse all other tabs normally!
+                </p>
+                <div style="font-size:0.85rem; color:#e2e8f0; font-weight:600; margin-bottom:8px;">
+                    Current Status: <span style="color:#00e676;">{MOMENTUM_SCAN_STATUS["status_text"]}</span>
+                </div>
+            </div>
+            <style>
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        st.progress(MOMENTUM_SCAN_STATUS["progress"])
+        if st.button("🔄 Refresh Status", key="refresh_wm_status_btn"):
+            st.rerun()
+
+    if run_wm_scan:
+        if MOMENTUM_SCAN_STATUS["is_running"]:
+            st.warning("⚠️ Scanners are already running in the background! Please wait for them to complete.")
+        else:
+            import concurrent.futures as _cf_wm
+        import time as _time_wm
+
+        from data_fetcher import get_index_stocks, get_all_nse_symbols
+        if "NIFTY 50" in universe_selection:
+            wm_universe = get_index_stocks("NIFTY 50")
+        elif "NIFTY 100" in universe_selection:
+            wm_universe = get_index_stocks("NIFTY 100")
+        else:
+            wm_universe = get_all_nse_symbols()
+
+        wm_results = []
+        wm_prog    = st.progress(0)
+        wm_status  = st.empty()
+
+        # ---- Step 1: Price filter ≥ ₹200 via 1d bulk download ----
+        wm_status.text("Step 1/3 — Fetching real-time quotes (Price ≥ ₹200 filter)...")
+        price_map_wm = {}
+        CRORE = 1_00_00_000
+
+        wm_tickers_ns = [f"{s.strip().upper()}.NS" for s in wm_universe]
+        wm_chunk_size  = 200
+        wm_q_chunks    = [wm_tickers_ns[i:i+wm_chunk_size] for i in range(0, len(wm_tickers_ns), wm_chunk_size)]
+
+        for wm_cidx, wm_chunk in enumerate(wm_q_chunks):
+            wm_status.text(f"Step 1/3 — Quote chunk {wm_cidx+1}/{len(wm_q_chunks)}...")
+            try:
+                wq_df = yf.download(tickers=wm_chunk, period="1d", progress=False)
+                if not wq_df.empty and isinstance(wq_df.columns, pd.MultiIndex):
+                    wpt = wq_df.columns.get_level_values(0).unique().tolist()
+                    wcl = wq_df['Close'].iloc[-1] if 'Close' in wpt else pd.Series(dtype=float)
+                    for wtk, wpv in wcl.items():
+                        wsc = str(wtk).replace(".NS", "").upper()
+                        if not pd.isna(wpv) and float(wpv) >= 200.0:
+                            price_map_wm[wsc] = float(wpv)
+            except Exception as wqe:
+                print(f"WM quote chunk {wm_cidx+1} failed: {wqe}")
+            _time_wm.sleep(0.5)
+
+        wm_price_passed = [s for s in wm_universe if s.strip().upper() in price_map_wm]
+        wm_status.text(f"Step 1/3 — {len(wm_price_passed)} stocks pass Price ≥ ₹200. Checking market caps...")
+
+        # ---- Step 2: Market cap ≥ 5000 Cr via parallel fast_info ----
+        mcap_map_wm = {}
+
+        def _fetch_mcap_wm(sym):
+            try:
+                fi = yf.Ticker(f"{sym.strip().upper()}.NS").fast_info
+                mc = getattr(fi, 'market_cap', None) or 0
+                return sym.strip().upper(), mc / CRORE
+            except Exception:
+                return sym.strip().upper(), 0.0
+
+        wm_status.text(f"Step 2/3 — Parallel market cap check for {len(wm_price_passed)} stocks...")
+        with _cf_wm.ThreadPoolExecutor(max_workers=12) as wm_pool:
+            for wsym_r, wmcap_cr in wm_pool.map(_fetch_mcap_wm, wm_price_passed):
+                if wmcap_cr >= 5000.0:
+                    mcap_map_wm[wsym_r] = wmcap_cr
+
+        wm_mcap_passed = list(mcap_map_wm.keys())
+        wm_status.text(f"Step 2/3 — {len(wm_mcap_passed)} stocks pass MCap ≥ ₹5000 Cr. Downloading weekly data...")
+
+        # ---- Step 3: Bulk weekly OHLCV download + scan ----
+        wm_monthly_chunk_size = 60
+        wm_sym_chunks  = [wm_mcap_passed[i:i+wm_monthly_chunk_size] for i in range(0, len(wm_mcap_passed), wm_monthly_chunk_size)]
+        wm_total_chunks = len(wm_sym_chunks)
+
+        for wc_idx, wc_chunk in enumerate(wm_sym_chunks):
+            wm_status.text(f"Step 3/3 — Scanning weekly data: chunk {wc_idx+1}/{wm_total_chunks} ({len(wm_results)} matches so far)...")
+            wm_prog.progress((wc_idx + 1) / max(wm_total_chunks, 1))
+            chunk_ns_wm = [f"{s.strip().upper()}.NS" for s in wc_chunk]
+            try:
+                df_wbulk = yf.download(
+                    tickers=chunk_ns_wm,
+                    period="3y",
+                    interval="1wk",
+                    progress=False
+                )
+                for sym_w in wc_chunk:
+                    sym_ns_w = f"{sym_w.strip().upper()}.NS"
+                    try:
+                        if isinstance(df_wbulk.columns, pd.MultiIndex):
+                            all_t_wm = df_wbulk.columns.get_level_values(1).unique().tolist()
+                            matched_w = next((t for t in all_t_wm if t.upper() == sym_ns_w.upper()), None)
+                            if matched_w is None:
+                                continue
+                            t_df_w = df_wbulk.xs(matched_w, axis=1, level=1).copy()
+                        else:
+                            if len(chunk_ns_wm) == 1:
+                                t_df_w = df_wbulk.copy()
+                            else:
+                                continue
+
+                        req_w = ['Open', 'High', 'Low', 'Close', 'Volume']
+                        if not all(col in t_df_w.columns for col in req_w):
+                            continue
+                        t_df_w = t_df_w[req_w].dropna(subset=['Close'])
+                        t_df_w = t_df_w[t_df_w['Volume'] > 0]
+                        if len(t_df_w) < 22:
+                            continue
+                        t_df_w = t_df_w.reset_index()
+                        t_df_w.rename(columns={t_df_w.columns[0]: 'Date'}, inplace=True)
+                        t_df_w['Date'] = pd.to_datetime(t_df_w['Date']).dt.tz_localize(None)
+
+                        res_w = scan_weekly_momentum(
+                            sym_w.strip().upper(),
+                            t_df_w,
+                            market_cap_cr=mcap_map_wm.get(sym_w.strip().upper(), 0.0)
+                        )
+                        if res_w is not None:
+                            wm_results.append(res_w)
+                    except Exception:
+                        pass
+            except Exception as wc_ex:
+                print(f"Weekly momentum chunk {wc_idx+1} failed: {wc_ex}")
+            _time_wm.sleep(0.3)
+
+        wm_prog.progress(1.0)
+        st.session_state.weekly_momentum_results = wm_results
+        wm_data = wm_results
+        wm_status.text(f"✅ Weekly Momentum scan complete! Found {len(wm_results)} qualifying stocks.")
+        st.toast(f"📈 Weekly scan done — {len(wm_results)} stocks matched all 8 conditions!", icon="✅")
+
+    # ---- Display Results ----
+    if wm_data is None:
+        st.info("💡 Click **Run Weekly Momentum Scan** above to start.")
+    elif len(wm_data) == 0:
+        st.warning("⚠️ No stocks matched all 8 Weekly Momentum conditions. Try a broader universe.")
+    else:
+        sorted_wm = sorted(wm_data, key=lambda x: x.get('weekly_score', 0.0), reverse=True)
+
+        # Metrics row
+        wm_m1, wm_m2, wm_m3, wm_m4 = st.columns(4)
+        wm_m1.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Stocks Matched</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{len(sorted_wm)}</h3></div>', unsafe_allow_html=True)
+        wm_m2.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg Weekly Score</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{sum(r["weekly_score"] for r in sorted_wm)/len(sorted_wm):.1f} pts</h3></div>', unsafe_allow_html=True)
+        wm_m3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg RSI (14W)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">{sum(r["rsi_weekly"] for r in sorted_wm)/len(sorted_wm):.1f}</h3></div>', unsafe_allow_html=True)
+        wm_m4.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg CCI (20W)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{sum(r["cci_weekly"] for r in sorted_wm)/len(sorted_wm):.1f}</h3></div>', unsafe_allow_html=True)
+        st.markdown("---")
+
+        # CSV export
+        wm_export = [{
+            "Symbol": r['symbol'], "Company": r['company_name'],
+            "CMP (₹)": r['cmp'], "MCap (Cr)": r['market_cap_cr'],
+            "1M Return (%)": r.get('return_1m', 0.0),
+            "Prev Close (₹)": r['prev_close'], "Week Open (₹)": r['curr_open'],
+            "SMA 20W (₹)": r['close_sma20'],
+            "RSI 14W": r['rsi_weekly'], "CCI 20W": r['cci_weekly'],
+            "Vol Ratio": r['vol_ratio'],
+            "Weekly Score": r['weekly_score'],
+            "Buy Price (₹)": r['buy_price'], "Stop Loss (₹)": r['exit_price'], "Target (₹)": r['target_price'],
+            "Confidence": r['confidence'],
+        } for r in sorted_wm]
+        wm_csv = pd.DataFrame(wm_export).to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Weekly Momentum Results (CSV)",
+            data=wm_csv,
+            file_name=f"weekly_momentum_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            key="dl_weekly_mom_csv"
+        )
+        st.markdown("---")
+
+        # Trade Execution Table
+        st.markdown("### 📊 Weekly Momentum Trade Execution Matrix")
+        wm_rows_html = []
+        w_df_wm  = watchlist.load_watchlist()
+        wl_syms_wm = set(w_df_wm['symbol'].str.upper().unique()) if not w_df_wm.empty else set()
+
+        for r in sorted_wm:
+            cmp_v  = r['cmp'];  buy_v = r['buy_price']
+            sl_v   = r['exit_price']; tgt_v = r['target_price']
+            conf_v = r.get('confidence', 'Medium')
+            clean_conf_wm = conf_v.split(" (")[0] if " (" in conf_v else conf_v
+            conf_color_wm = "#00e676" if "High" in clean_conf_wm else "#ffa000" if "Medium" in clean_conf_wm else "#ef4444"
+            conf_badge_wm = (
+                f'<span style="background:rgba({"0,230,118" if "High" in clean_conf_wm else "255,160,0" if "Medium" in clean_conf_wm else "239,68,68"},0.12); '
+                f'color:{conf_color_wm}; border:1px solid {conf_color_wm}; font-size:0.75rem; padding:2px 8px; border-radius:4px;">{clean_conf_wm}</span>'
+            )
+            is_wl_wm = r['symbol'] in wl_syms_wm
+            if is_wl_wm:
+                wl_cell_wm = f'<td style="padding:8px 10px; text-align:center;"><span style="color:#00e676;">☑️</span> <a href="/?remove_from_watchlist={r["symbol"]}" target="_self" style="color:#ef4444; font-size:0.72rem;">[Remove]</a></td>'
+            else:
+                wl_cell_wm = f'<td style="padding:8px 10px; text-align:center;"><a href="/?add_to_watchlist={r["symbol"]}&price={buy_v}&score={r.get("weekly_score",50)}" target="_self" style="color:#00e676; font-size:0.72rem;">[+Add]</a></td>'
+
+            chg_b    = get_day_change_badge_html(r.get('weekly_chg_pct', 0.0))
+            ret_1m_val = r.get('return_1m', 0.0)
+            ret_1m_b = get_day_change_badge_html(ret_1m_val)
+            rsi_col  = "#00e676" if 65 <= r['rsi_weekly'] <= 80 else "#ffa000"
+            cci_col  = "#00e676" if r['cci_weekly'] >= 150 else "#ffa000" if r['cci_weekly'] >= 100 else "#29b6f6"
+            vol_col  = "#00e676" if r['vol_ratio'] >= 2.0 else "#ffa000"
+            mcap_fmt = f"₹{r['market_cap_cr']:,.0f} Cr" if r['market_cap_cr'] > 0 else "—"
+
+            # Gap flag
+            gap_pct  = round((r['curr_open'] - r['prev_close']) / r['prev_close'] * 100, 2) if r['prev_close'] > 0 else 0.0
+            gap_badge = f'<span style="color:#00e676; font-weight:700;">▲{gap_pct:.1f}%</span>' if gap_pct > 0 else f'<span style="color:#ef4444;">{gap_pct:.1f}%</span>'
+
+            clean_rec_wm = extract_clean_recommendation(r.get('recommendation', ''))
+
+            wm_rows_html.append(
+                f'<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">'
+                f'{wl_cell_wm}'
+                f'<td style="padding:8px 10px; font-weight:bold;"><a href="https://in.tradingview.com/chart/?symbol=NSE:{r["symbol"]}" target="_blank" style="color:#29b6f6; text-decoration:none;">{r["symbol"]}</a></td>'
+                f'<td style="padding:8px 10px; color:#94a3b8; font-size:0.78rem;">{r.get("company_name","")}</td>'
+                f'<td style="padding:8px 10px; color:#e2e8f0; font-weight:600;">₹{cmp_v:,.2f}</td>'
+                f'<td style="padding:8px 10px;">{chg_b}</td>'
+                f'<td style="padding:8px 10px;">{ret_1m_b}</td>'
+                f'<td style="padding:8px 10px; color:#00e5ff;">{mcap_fmt}</td>'
+                f'<td style="padding:8px 10px; color:#94a3b8;">₹{r["prev_close"]:,.2f}</td>'
+                f'<td style="padding:8px 10px;">{gap_badge}</td>'
+                f'<td style="padding:8px 10px; color:#7dd3fc;">₹{r["close_sma20"]:,.2f}</td>'
+                f'<td style="padding:8px 10px; color:{rsi_col}; font-weight:700;">{r["rsi_weekly"]:.1f}</td>'
+                f'<td style="padding:8px 10px; color:{cci_col}; font-weight:700;">{r["cci_weekly"]:.1f}</td>'
+                f'<td style="padding:8px 10px; color:{vol_col}; font-weight:700;">{r["vol_ratio"]:.2f}x</td>'
+                f'<td style="padding:8px 10px; color:#00e676; font-weight:700;">{r["weekly_score"]:.0f}</td>'
+                f'<td style="padding:8px 10px; color:#cbd5e1; font-weight:600;">₹{buy_v:,.2f}</td>'
+                f'<td style="padding:8px 10px; color:#ef4444; font-weight:600;">₹{sl_v:,.2f}</td>'
+                f'<td style="padding:8px 10px; color:#00e676; font-weight:600;">₹{tgt_v:,.2f}</td>'
+                f'<td style="padding:8px 10px;">{conf_badge_wm}</td>'
+                f'<td style="padding:8px 10px; color:#94a3b8; font-style:italic; font-size:0.78rem; line-height:1.4; min-width: 250px; max-width: 350px; white-space: normal !important; word-wrap: break-word;">"{clean_rec_wm}"</td>'
+                f'</tr>'
+            )
+
+        wm_hdr_cols = [
+            "WL", "Symbol", "Company", "CMP", "Wk Chg%", "1M Return %", "MCap",
+            "Prev Close", "Gap Open", "SMA 20W",
+            "RSI 14W", "CCI 20W", "Vol Ratio", "Score",
+            "Buy", "Stop", "Target", "Confidence", "Analysis"
+        ]
+        wm_hdr_html = "".join([f'<th style="padding:8px 10px; white-space:nowrap;">{h}</th>' for h in wm_hdr_cols])
+
+        st.markdown(
+            f'<div class="glass-card" style="padding:18px; border:1px solid rgba(0,230,118,0.2); background:rgba(9,13,22,0.55); border-radius:12px;">'
+            f'<div style="overflow-x:auto;">'
+            f'<table style="width:100%; border-collapse:collapse; text-align:left; font-size:0.82rem; color:#cbd5e1; font-family:Outfit,sans-serif;">'
+            f'<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1); color:#00e676; font-weight:bold; background:rgba(0,230,118,0.05); font-size:0.77rem; text-transform:uppercase;">'
+            f'{wm_hdr_html}</tr></thead>'
+            f'<tbody>{chr(10).join(wm_rows_html)}</tbody>'
+            f'</table></div></div>',
+            unsafe_allow_html=True
+        )

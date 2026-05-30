@@ -592,3 +592,331 @@ def compute_rich_analysis(df, symbol, strategy_name, base_rec_text):
         return base_rec_text
 
 
+def scan_monthly_momentum(symbol: str, df_monthly: pd.DataFrame, market_cap_cr: float = 0.0) -> dict | None:
+    """
+    Scans monthly OHLCV data for the Chartink-style Monthly Momentum Filter:
+
+    Conditions (all on Monthly timeframe):
+    1. Close > EMA(Close, 8)
+    2. EMA(Close, 8) > EMA(Close, 12)
+    3. EMA(Close, 12) > EMA(Close, 20)
+    4. ROC(6) > 10   [Rate of Change over 6 months > 10%]
+    5. ROC(6) <= 80  [Not overextended — <= 80%]
+    6. RSI(14) > 55
+    7. RSI(14) < 85
+    8. Volume > SMA(Volume, 12)
+    9. Market Cap >= 3000 Crore
+    10. Close >= 100 (price filter)
+
+    Returns a result dict if ALL conditions are met, else None.
+    """
+    if df_monthly is None or len(df_monthly) < 22:
+        # Need at least 22 monthly bars for EMA(20) + RSI(14) to be stable
+        return None
+
+    try:
+        close = df_monthly['Close']
+        volume = df_monthly['Volume']
+
+        # ---- Price filter ----
+        cmp = float(close.iloc[-1])
+        if cmp < 100.0:
+            return None
+
+        # ---- Market Cap filter ----
+        if market_cap_cr > 0 and market_cap_cr < 3000.0:
+            return None
+
+        # ---- EMA calculations ----
+        ema8  = close.ewm(span=8,  adjust=False).mean()
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema20 = close.ewm(span=20, adjust=False).mean()
+
+        ema8_val  = float(ema8.iloc[-1])
+        ema12_val = float(ema12.iloc[-1])
+        ema20_val = float(ema20.iloc[-1])
+
+        # Condition 1: Close > EMA8
+        if not (cmp > ema8_val):
+            return None
+        # Condition 2: EMA8 > EMA12
+        if not (ema8_val > ema12_val):
+            return None
+        # Condition 3: EMA12 > EMA20
+        if not (ema12_val > ema20_val):
+            return None
+
+        # ---- ROC (6 months) ----
+        if len(close) < 7:
+            return None
+        close_6m_ago = float(close.iloc[-7])
+        if close_6m_ago <= 0:
+            return None
+        roc6 = (cmp - close_6m_ago) / close_6m_ago * 100.0
+
+        # Condition 4: ROC > 10
+        if not (roc6 > 10.0):
+            return None
+        # Condition 5: ROC <= 80
+        if not (roc6 <= 80.0):
+            return None
+
+        # ---- RSI (14 monthly bars) ----
+        delta = close.diff()
+        gain  = delta.clip(lower=0)
+        loss  = -delta.clip(upper=0)
+        avg_gain = gain.ewm(com=13, adjust=False).mean()
+        avg_loss = loss.ewm(com=13, adjust=False).mean()
+        rs = avg_gain / (avg_loss + 1e-9)
+        rsi_series = 100 - (100 / (1 + rs))
+        rsi_val = float(rsi_series.iloc[-1])
+
+        # Condition 6: RSI > 55
+        if not (rsi_val > 55.0):
+            return None
+        # Condition 7: RSI < 85
+        if not (rsi_val < 85.0):
+            return None
+
+        # ---- Volume > SMA(Volume, 12) ----
+        if len(volume) < 12:
+            return None
+        vol_sma12 = float(volume.rolling(window=12).mean().iloc[-1])
+        curr_vol  = float(volume.iloc[-1])
+
+        # Condition 8: Volume > SMA(Volume, 12)
+        if not (curr_vol > vol_sma12):
+            return None
+
+        # ---- All conditions passed — compute trade setup ----
+        # Monthly ATR-based stop: use last candle's Low as stop anchor
+        last_low = float(df_monthly['Low'].iloc[-1])
+        buy_price  = round(cmp, 2)
+        exit_price = round(last_low * 0.97, 2)   # 3% below monthly low
+        target_price = round(cmp * 1.20, 2)       # 20% swing target (1-2 months)
+
+        # Score based on quality of alignment
+        score = 0.0
+        # EMA stacking tightness (the tighter, the earlier the entry)
+        ema_gap_pct = (ema8_val - ema20_val) / ema20_val * 100
+        score += min(ema_gap_pct / 5.0 * 30.0, 30.0)  # up to 30 pts
+        # ROC momentum (mid-range is best)
+        roc_score = 30.0 - abs(roc6 - 35.0) / 35.0 * 30.0
+        score += max(0.0, roc_score)                    # up to 30 pts
+        # RSI in sweet spot
+        if 60.0 <= rsi_val <= 75.0:
+            score += 25.0
+        elif 55.0 < rsi_val < 85.0:
+            score += 15.0
+        # Volume surge bonus
+        if curr_vol > vol_sma12 * 1.5:
+            score += 15.0
+        else:
+            score += 8.0
+        score = round(min(score, 100.0), 1)
+
+        if score >= 70:
+            confidence = f"High ({score}%)"
+        elif score >= 50:
+            confidence = f"Medium-High ({score}%)"
+        else:
+            confidence = f"Medium ({score}%)"
+
+        prev_close = float(close.iloc[-2]) if len(close) >= 2 else cmp
+        day_change_pct = round((cmp - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0.0
+
+        base_rec = (
+            f"Monthly EMA Stack (EMA8 > EMA12 > EMA20) confirmed bullish alignment. "
+            f"ROC(6M) = {roc6:.1f}% (healthy momentum), RSI(14M) = {rsi_val:.1f} (non-overbought). "
+            f"Volume breakout above 12M SMA confirms institutional participation. "
+            f"Buy near ₹{buy_price:.2f}, stop at monthly low ₹{exit_price:.2f}, target ₹{target_price:.2f} (+20%)."
+        )
+        recommendation = compute_rich_analysis(df_monthly, symbol, "Monthly EMA Momentum", base_rec)
+
+        from config import get_company_name
+        company_name = get_company_name(symbol)
+
+        return {
+            "symbol": symbol.strip().upper(),
+            "company_name": company_name,
+            "cmp": buy_price,
+            "day_change_pct": day_change_pct,
+            "ema8": round(ema8_val, 2),
+            "ema12": round(ema12_val, 2),
+            "ema20": round(ema20_val, 2),
+            "roc6": round(roc6, 2),
+            "rsi_monthly": round(rsi_val, 2),
+            "volume": int(curr_vol),
+            "vol_sma12": round(vol_sma12, 0),
+            "market_cap_cr": round(market_cap_cr, 1),
+            "momentum_score": score,
+            "buy_price": buy_price,
+            "exit_price": exit_price,
+            "target_price": target_price,
+            "confidence": confidence,
+            "recommendation": recommendation,
+            "return_1m": day_change_pct,
+        }
+
+    except Exception as e:
+        print(f"Monthly momentum scan error for {symbol}: {e}")
+        return None
+
+
+def scan_weekly_momentum(symbol: str, df_weekly: pd.DataFrame, market_cap_cr: float = 0.0) -> dict | None:
+    """
+    Scans weekly OHLCV data for the Chartink-style Weekly Momentum Breakout Filter.
+
+    All conditions on WEEKLY candles:
+    1.  Weekly Volume > SMA(Volume, 20)
+    2.  Weekly Close > 200
+    3.  Weekly Close > Previous Week Close
+    4.  Weekly Open  > Previous Week Close   (gap-up / strong open)
+    5.  Weekly CCI(20) > 90
+    6.  Market Cap > 5000 Crore
+    7.  Weekly RSI(14) > 60
+    8.  Weekly Close > SMA(Close, 20)
+    """
+    if df_weekly is None or len(df_weekly) < 22:
+        return None
+
+    try:
+        close  = df_weekly['Close'].reset_index(drop=True)
+        open_  = df_weekly['Open'].reset_index(drop=True)
+        high   = df_weekly['High'].reset_index(drop=True)
+        low    = df_weekly['Low'].reset_index(drop=True)
+        volume = df_weekly['Volume'].reset_index(drop=True)
+
+        cmp        = float(close.iloc[-1])
+        curr_open  = float(open_.iloc[-1])
+        prev_close = float(close.iloc[-2]) if len(close) >= 2 else cmp
+
+        # Condition 2: Price > 200
+        if cmp < 200.0:
+            return None
+
+        # Condition 6: Market Cap > 5000 Cr
+        if market_cap_cr > 0 and market_cap_cr < 5000.0:
+            return None
+
+        # Condition 3: Close > Previous Week Close
+        if not (cmp > prev_close):
+            return None
+
+        # Condition 4: Open > Previous Week Close
+        if not (curr_open > prev_close):
+            return None
+
+        # Condition 1: Volume > SMA(Volume, 20)
+        if len(volume) < 20:
+            return None
+        vol_sma20 = float(volume.rolling(window=20).mean().iloc[-1])
+        curr_vol  = float(volume.iloc[-1])
+        if not (curr_vol > vol_sma20):
+            return None
+
+        # Condition 8: Close > SMA(Close, 20)
+        if len(close) < 20:
+            return None
+        close_sma20 = float(close.rolling(window=20).mean().iloc[-1])
+        if not (cmp > close_sma20):
+            return None
+
+        # Condition 7: RSI(14) > 60
+        delta    = close.diff()
+        gain     = delta.clip(lower=0)
+        loss     = -delta.clip(upper=0)
+        avg_gain = gain.ewm(com=13, adjust=False).mean()
+        avg_loss = loss.ewm(com=13, adjust=False).mean()
+        rs       = avg_gain / (avg_loss + 1e-9)
+        rsi_val  = float((100 - (100 / (1 + rs))).iloc[-1])
+        if not (rsi_val > 60.0):
+            return None
+
+        # Condition 5: CCI(20) > 90
+        tp       = (high + low + close) / 3.0
+        tp_sma20 = tp.rolling(window=20).mean()
+        mad20    = tp.rolling(window=20).apply(lambda x: (abs(x - x.mean())).mean(), raw=True)
+        cci_val  = float(((tp - tp_sma20) / (0.015 * (mad20 + 1e-9))).iloc[-1])
+        if not (cci_val > 90.0):
+            return None
+
+        # ---- All conditions passed — trade setup ----
+        buy_price    = round(cmp, 2)
+        last_low     = float(low.iloc[-1])
+        exit_price   = round(min(last_low * 0.98, cmp * 0.95), 2)
+        target_price = round(cmp * 1.15, 2)
+
+        # 1-Month Return calculation (from 4 weeks ago)
+        close_4w_ago = float(close.iloc[-5]) if len(close) >= 5 else float(close.iloc[0])
+        return_1m = round((cmp - close_4w_ago) / close_4w_ago * 100, 2) if close_4w_ago > 0 else 0.0
+
+        vol_ratio = curr_vol / vol_sma20 if vol_sma20 > 0 else 1.0
+
+        score = 0.0
+        if 65 <= rsi_val <= 80:
+            score += 30.0
+        elif 60 < rsi_val <= 85:
+            score += 20.0
+        if cci_val >= 150:
+            score += 25.0
+        elif cci_val >= 100:
+            score += 18.0
+        else:
+            score += 10.0
+        if vol_ratio >= 2.0:
+            score += 25.0
+        elif vol_ratio >= 1.5:
+            score += 18.0
+        else:
+            score += 10.0
+        dist_pct = (cmp - close_sma20) / close_sma20 * 100
+        if dist_pct <= 5:
+            score += 20.0
+        elif dist_pct <= 10:
+            score += 12.0
+        else:
+            score += 5.0
+        score = round(min(score, 100.0), 1)
+
+        confidence = f"High ({score}%)" if score >= 75 else f"Medium-High ({score}%)" if score >= 55 else f"Medium ({score}%)"
+        weekly_chg_pct = round((cmp - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0.0
+
+        base_rec = (
+            f"Weekly Momentum Breakout: Price ₹{cmp:.2f} above 20W SMA (₹{close_sma20:.2f}). "
+            f"Volume {vol_ratio:.2f}x 20W avg confirms institutional participation. "
+            f"RSI(14W)={rsi_val:.1f}, CCI(20W)={cci_val:.1f} — strong bullish momentum. "
+            f"Open (₹{curr_open:.2f}) > Last Week Close (₹{prev_close:.2f}) = gap-up continuation. "
+            f"Buy ₹{buy_price:.2f} | Stop ₹{exit_price:.2f} | Target ₹{target_price:.2f} (+15%)."
+        )
+        recommendation = compute_rich_analysis(df_weekly, symbol, "Weekly Momentum Breakout", base_rec)
+
+        from config import get_company_name
+        company_name = get_company_name(symbol)
+
+        return {
+            "symbol": symbol.strip().upper(),
+            "company_name": company_name,
+            "cmp": buy_price,
+            "weekly_chg_pct": weekly_chg_pct,
+            "prev_close": round(prev_close, 2),
+            "curr_open": round(curr_open, 2),
+            "close_sma20": round(close_sma20, 2),
+            "rsi_weekly": round(rsi_val, 2),
+            "cci_weekly": round(cci_val, 2),
+            "volume": int(curr_vol),
+            "vol_sma20": round(vol_sma20, 0),
+            "vol_ratio": round(vol_ratio, 2),
+            "market_cap_cr": round(market_cap_cr, 1),
+            "weekly_score": score,
+            "buy_price": buy_price,
+            "exit_price": exit_price,
+            "target_price": target_price,
+            "confidence": confidence,
+            "recommendation": recommendation,
+            "return_1m": return_1m,
+        }
+
+    except Exception as e:
+        print(f"Weekly momentum scan error for {symbol}: {e}")
+        return None
