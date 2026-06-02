@@ -318,10 +318,10 @@ def scan_coiled_spring(symbol: str, df: pd.DataFrame) -> dict | None:
         "recommendation": recommendation
     }
 
-def scan_wt_cross(symbol: str, df: pd.DataFrame) -> dict | None:
+def scan_wt_cross(symbol: str, df: pd.DataFrame, wt_oversold_threshold: float = -40.0) -> dict | None:
     """
     Scans a stock's history to calculate WaveTrend with Crosses [LazyBear] (WT_CROSS_LB).
-    Returns WT details if wt1 <= -40.0 (oversold zone).
+    Returns WT details if wt1 <= wt_oversold_threshold (oversold zone).
     Also detects bullish buy signal (green dot): wt1 crosses above wt2 from oversold zone.
     
     Mathematical details:
@@ -332,7 +332,7 @@ def scan_wt_cross(symbol: str, df: pd.DataFrame) -> dict | None:
     wt1 = EMA(ci, n2=21)
     wt2 = SMA(wt1, 4)
     
-    Buy signal (green dot): wt1 crosses above wt2 while in oversold zone (wt2 <= -40)
+    Buy signal (green dot): wt1 crosses above wt2 while in oversold zone (wt2 <= wt_oversold_threshold)
     """
     if df is None or len(df) < 40:
         return None
@@ -363,8 +363,8 @@ def scan_wt_cross(symbol: str, df: pd.DataFrame) -> dict | None:
     if pd.isna(today_wt1) or pd.isna(today_wt2):
         return None
         
-    # Check if wt1 is in oversold zone (below -40)
-    if today_wt1 > -40.0:
+    # Check if wt1 is in oversold zone (below threshold)
+    if today_wt1 > wt_oversold_threshold:
         return None
     
     today = df_copy.iloc[-1]
@@ -409,7 +409,7 @@ def scan_wt_cross(symbol: str, df: pd.DataFrame) -> dict | None:
     else:
         confidence = "Medium (WT Oversold)"
         base_rec = (
-            f"Stock is in a deep WaveTrend oversold zone (WT1 = {today_wt1:.1f} is below -40). "
+            f"Stock is in a deep WaveTrend oversold zone (WT1 = {today_wt1:.1f} is below {wt_oversold_threshold}). "
             f"No green dot cross yet, but prime for accumulation. Buy on pullbacks near ₹{buy_price:.2f} "
             f"with stop loss at ₹{exit_price:.2f} and target bounce of ₹{target_price:.2f}."
         )

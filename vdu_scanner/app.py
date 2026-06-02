@@ -3430,20 +3430,34 @@ with tab_crossover_ma:
 # TAB 10: WAVE TREND (LazyBear)
 # ==============================================================================
 with tab_wavetrend:
-    # 0. Timeframe selector inside tab
-    wt_timeframe = st.selectbox(
-        "🌊 Select WaveTrend Timeframe:",
-        options=["Daily", "15 Min", "1 Hour", "Weekly", "Monthly"],
-        index=0,
-        key="wt_tab_timeframe_selector_v2",
-        help="Select the WaveTrend chart interval. Changing this dynamically runs a real-time parallel scan for active stocks."
-    )
+    # 0. Timeframe & Threshold selector inside tab
+    wt_col1, wt_col2 = st.columns(2)
+    with wt_col1:
+        wt_timeframe = st.selectbox(
+            "🌊 Select WaveTrend Timeframe:",
+            options=["Daily", "15 Min", "1 Hour", "Weekly", "Monthly"],
+            index=0,
+            key="wt_tab_timeframe_selector_v2",
+            help="Select the WaveTrend chart interval. Changing this dynamically runs a real-time parallel scan for active stocks."
+        )
+    with wt_col2:
+        wt_oversold_threshold = st.number_input(
+            "📉 Oversold Threshold:",
+            min_value=-100.0,
+            max_value=0.0,
+            value=-40.0,
+            step=5.0,
+            key="wt_oversold_threshold",
+            help="Define the WT1 value below which a stock is considered oversold. Default is -40.0."
+        )
+        
+    wt_cache_key = f"{wt_timeframe}_{wt_oversold_threshold}"
     
     # Reactive Loader
     if 'wt_results_by_tf' not in st.session_state:
         st.session_state.wt_results_by_tf = {}
         
-    if wt_timeframe not in st.session_state.wt_results_by_tf or st.session_state.wt_results_by_tf[wt_timeframe] is None:
+    if wt_cache_key not in st.session_state.wt_results_by_tf or st.session_state.wt_results_by_tf[wt_cache_key] is None:
         # Resolve symbols to scan: use all scanned breakout symbols or fallback to NIFTY 100/50
         symbols_to_scan = []
         if st.session_state.scan_results:
@@ -3506,22 +3520,24 @@ with tab_wavetrend:
                                     ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
                                     ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
 
-                                    wt_res = scan_wt_cross(sym, ticker_df)
+                                    wt_res = scan_wt_cross(sym, ticker_df, wt_oversold_threshold=wt_oversold_threshold)
                                     if wt_res is not None:
                                         wt_res['timeframe'] = wt_timeframe
+                                        # Inject threshold logic
+                                        wt_res['is_oversold'] = wt_res['wt_value'] <= wt_oversold_threshold
                                         wt_tf_results.append(wt_res)
                         except Exception as sym_wt_ex:
                             print(f"Error extracting {sym_ns} from WaveTrend bulk download: {sym_wt_ex}")
                 except Exception as chunk_ex:
                     print(f"Error bulk downloading WaveTrend chunk: {chunk_ex}")
             
-            st.session_state.wt_results_by_tf[wt_timeframe] = wt_tf_results
+            st.session_state.wt_results_by_tf[wt_cache_key] = wt_tf_results
             st.toast(f"🌊 WaveTrend {wt_timeframe} scan complete!", icon="✅")
             
-    wt_data = st.session_state.wt_results_by_tf.get(wt_timeframe, [])
+    wt_data = st.session_state.wt_results_by_tf.get(wt_cache_key, [])
     
     st.markdown(f"### 🌊 WaveTrend Oversold Buy Signals ({wt_timeframe} Timeframe)")
-    st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Scan for stocks in the WaveTrend oversold zone (WT1 below -30) using LazyBear's WaveTrend with Crosses indicator. Stocks showing a <b style=\"color:#00e676;\">green dot 🟢 buy signal</b> (WT1 crossing above WT2) in oversold territory are prime mean-reversion candidates.</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='font-size:0.9rem; color:#94a3b8;'>Scan for stocks in the WaveTrend oversold zone (WT1 below {wt_oversold_threshold}) using LazyBear's WaveTrend with Crosses indicator. Stocks showing a <b style=\"color:#00e676;\">green dot 🟢 buy signal</b> (WT1 crossing above WT2) in oversold territory are prime mean-reversion candidates.</p>", unsafe_allow_html=True)
     st.markdown("---")
     
     # 1. Premium Metrics Row
@@ -3539,7 +3555,7 @@ with tab_wavetrend:
         wt_deepest = 0.0
         wt_avg = 0.0
     
-    wt_m1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Oversold Stocks (WT1 < -30)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{wt_total}</h3></div>', unsafe_allow_html=True)
+    wt_m1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Oversold Stocks (WT1 < {wt_oversold_threshold})</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{wt_total}</h3></div>', unsafe_allow_html=True)
     wt_m2.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">🟢 Buy Signals (Green Dot)</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{wt_buy_count}</h3></div>', unsafe_allow_html=True)
     wt_m3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Deepest WT1 Value</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">{wt_deepest:.1f}</h3></div>', unsafe_allow_html=True)
     wt_m4.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg WT1 Value</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{wt_avg:.1f}</h3></div>', unsafe_allow_html=True)
@@ -3573,7 +3589,7 @@ with tab_wavetrend:
     if wt_data is None:
         st.info("💡 Run the scanner from the sidebar to identify WaveTrend oversold buy signals.")
     elif len(wt_data) == 0:
-        st.info(f"ℹ️ No stocks found in the WaveTrend oversold zone (WT1 < -30) on {wt_timeframe} timeframe today.")
+        st.info(f"ℹ️ No stocks found in the WaveTrend oversold zone (WT1 < {wt_oversold_threshold}) on {wt_timeframe} timeframe today.")
     else:
         # Apply filters
         display_wt = list(wt_data)
