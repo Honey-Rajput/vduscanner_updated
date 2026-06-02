@@ -105,6 +105,12 @@ def scan_stock(
     if not pd.isna(today_ma):
         above_50dma = today['Close'] > today_ma
         
+    df_indicators['MA200'] = df_indicators['Close'].rolling(window=200).mean()
+    today_ma200 = df_indicators['MA200'].iloc[-1]
+    above_200dma = False
+    if not pd.isna(today_ma200):
+        above_200dma = today['Close'] > today_ma200
+        
     # Calculate score weights
     score = 0.0
     # 1. Volume ratio: Up to 40 points
@@ -167,6 +173,7 @@ def scan_stock(
         "signal_strength": score,
         "pct_change_today": round(day_change_pct, 2),
         "above_50dma": above_50dma,
+        "above_200dma": above_200dma,
         "df": df_indicators,
         "high_52w": high_120d,      
         "low_52w": low_120d,
@@ -600,7 +607,7 @@ def scan_monthly_momentum(symbol: str, df_monthly: pd.DataFrame, market_cap_cr: 
     1. Close > EMA(Close, 8)
     2. EMA(Close, 8) > EMA(Close, 12)
     3. EMA(Close, 12) > EMA(Close, 20)
-    4. ROC(6) > 10   [Rate of Change over 6 months > 10%]
+    4. ROC(6) > 20   [Rate of Change over 6 months > 20%]
     5. ROC(6) <= 80  [Not overextended — <= 80%]
     6. RSI(14) > 55
     7. RSI(14) < 85
@@ -621,6 +628,16 @@ def scan_monthly_momentum(symbol: str, df_monthly: pd.DataFrame, market_cap_cr: 
         # ---- Price filter ----
         cmp = float(close.iloc[-1])
         if cmp < 100.0:
+            return None
+
+        # Condition 0: CMP must be breaking upward from previous month's closing price
+        prev_month_close = float(close.iloc[-2]) if len(close) >= 2 else cmp
+        if not (cmp > prev_month_close):
+            return None
+
+        # Condition 0.5: Current monthly candle must be green (CMP > Monthly Open)
+        monthly_open = float(df_monthly['Open'].iloc[-1])
+        if not (cmp > monthly_open):
             return None
 
         # ---- Market Cap filter ----
@@ -654,8 +671,8 @@ def scan_monthly_momentum(symbol: str, df_monthly: pd.DataFrame, market_cap_cr: 
             return None
         roc6 = (cmp - close_6m_ago) / close_6m_ago * 100.0
 
-        # Condition 4: ROC > 10
-        if not (roc6 > 10.0):
+        # Condition 4: ROC > 20
+        if not (roc6 > 20.0):
             return None
         # Condition 5: ROC <= 80
         if not (roc6 <= 80.0):
@@ -1056,3 +1073,92 @@ def run_weekly_momentum_update(base_date_str: str, today_str: str) -> list[dict]
         updated_results.append(updated_record)
         
     return updated_results
+
+def scan_vcs(symbol: str, df: pd.DataFrame, lenShort=13, lenLong=63, lenVol=50, sensitivity=2.0, max_score=10.0) -> dict | None:
+    """
+    Scans a stock for Volatility Contraction (VCS) based on ATR, StdDev, and Volume contraction.
+    """
+    if df is None or len(df) < max(lenLong, lenVol) + 2:
+        return None
+
+    try:
+        df_copy = df.copy()
+
+        df_copy["prev_close"] = df_copy["Close"].shift(1)
+
+        tr1 = df_copy["High"] - df_copy["Low"]
+        tr2 = (df_copy["High"] - df_copy["prev_close"]).abs()
+        tr3 = (df_copy["Low"] - df_copy["prev_close"]).abs()
+
+        df_copy["TR"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+        # ATR contraction
+        df_copy["trShort"] = df_copy["TR"].rolling(lenShort).mean()
+        df_copy["trLong"] = df_copy["TR"].rolling(lenLong).mean()
+        df_copy["ratioATR"] = df_copy["trShort"] / df_copy["trLong"]
+
+        # STANDARD DEVIATION CONTRACTION
+        df_copy["stdShort"] = df_copy["Close"].rolling(lenShort).std()
+        df_copy["stdLong"] = df_copy["Close"].rolling(lenLong).std()
+        df_copy["ratioStd"] = df_copy["stdShort"] / df_copy["stdLong"]
+
+        # VOLUME CONTRACTION
+        df_copy["volAvg"] = df_copy["Volume"].rolling(lenVol).mean()
+        df_copy["volShort"] = df_copy["Volume"].rolling(5).mean()
+        df_copy["volRatio"] = df_copy["volShort"] / df_copy["volAvg"]
+
+        # SCORE CALCULATION
+        df_copy["s_atr"] = np.maximum(0, 1 - df_copy["ratioATR"]) * sensitivity
+        df_copy["s_std"] = np.maximum(0, 1 - df_copy["ratioStd"]) * sensitivity
+        df_copy["s_vol"] = np.maximum(0, 1 - df_copy["volRatio"])
+
+        df_copy["rawScore"] = (
+            df_copy["s_atr"] * 0.4 +
+            df_copy["s_std"] * 0.4 +
+            df_copy["s_vol"] * 0.2
+        )
+
+        df_copy["finalScore"] = df_copy["rawScore"] * 100
+        
+        today_score = df_copy["finalScore"].iloc[-1]
+        
+        if pd.isna(today_score):
+            return None
+            
+        if today_score <= max_score:
+            today = df_copy.iloc[-1]
+            yesterday = df_copy.iloc[-2] if len(df_copy) >= 2 else today
+            day_change_pct = ((today['Close'] - yesterday['Close']) / yesterday['Close'] * 100) if len(df_copy) >= 2 else 0.0
+            
+            buy_price = round(float(today['Close']), 2)
+            exit_price = round(buy_price * 0.95, 2)
+            target_price = round(buy_price * 1.15, 2)
+            
+            from config import get_company_name
+            company_name = get_company_name(symbol)
+            
+            confidence = "High" if today_score < 5 else "Medium"
+            
+            base_rec = f"VCS final score is {today_score:.2f} (below {max_score}), indicating strict setup conditions met. Buy near ₹{buy_price:.2f}, SL ₹{exit_price:.2f}, Target ₹{target_price:.2f}."
+            recommendation = compute_rich_analysis(df_copy, symbol, "VCS Setup", base_rec)
+
+            return {
+                "symbol": symbol.strip().upper(),
+                "company_name": company_name,
+                "cmp": buy_price,
+                "day_change_pct": round(day_change_pct, 2),
+                "vcs_score": round(today_score, 2),
+                "volume": int(today['Volume']),
+                "buy_price": buy_price,
+                "exit_price": exit_price,
+                "target_price": target_price,
+                "confidence": confidence,
+                "recommendation": recommendation
+            }
+            
+        return None
+        
+    except Exception as e:
+        print(f"VCS scan error for {symbol}: {e}")
+        return None
+

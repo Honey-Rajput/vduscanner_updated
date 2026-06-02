@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 from config import IST_TIMEZONE, get_company_name, DRY_ZONE_MIN_DAYS, DRY_ZONE_MAX_DAYS, MIN_VOLUME_RATIO, MIN_PRICE_CHANGE
 from data_fetcher import fetch_ohlcv, get_index_stocks, fetch_ohlcv_timeframe
-from scanner import scan_stock, scan_coiled_spring, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum
+from scanner import scan_stock, scan_coiled_spring, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum, scan_vcs
 
 import watchlist
 from utils import inject_premium_css, get_signal_badge_html, get_day_change_badge_html
@@ -524,6 +524,7 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         "Spikes": lambda x: int(x.get('dry_spikes') or 0),
         "Score": lambda x: float(x.get('signal_strength') or 0.0),
         "Squeeze Score": lambda x: float(x.get('squeeze_score') or 0.0),
+        "VCS Score": lambda x: float(x.get('vcs_score') or 0.0),
         "5d Range": lambda x: float(x.get('range_5d') or 0.0),
         "Pre-Range": lambda x: float(x.get('pre_range') or 0.0),
         "Prev Close": lambda x: float(x.get('prev_close') or 0.0),
@@ -673,6 +674,12 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
             sig_badge = '<span class="custom-badge badge-green" style="font-weight:600; padding: 2px 6px; border-radius: 4px;">🟢 BUY</span>' if r.get('buy_signal') else '<span class="custom-badge badge-grey" style="padding: 2px 6px; border-radius: 4px;">Oversold</span>'
             cells.append(f'<td style="padding: 10px 12px;">{sig_badge}</td>')
             
+        elif strategy_type == "vcs":
+            chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
+            cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
+            score_val = r.get('vcs_score', 0.0)
+            cells.append(f'<td style="padding: 10px 12px; color: #29b6f6; font-weight: 700;">{score_val:.2f}</td>')
+            
         # Common Execution Columns
         cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1; font-weight: 600;">₹{buy:,.2f}</td>')
         cells.append(f'<td style="padding: 10px 12px; color: #ef4444; font-weight: 600;">₹{sl:,.2f}</td>')
@@ -699,6 +706,8 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         headers.extend(["Day Chg %", "Run Up 200 SMA", "Run Up 52w Low", "Stage Type", "Remaining Target %"])
     elif strategy_type == "wavetrend":
         headers.extend(["Day Chg %", "WT1", "WT2", "WT Diff", "Signal"])
+    elif strategy_type == "vcs":
+        headers.extend(["Day Chg %", "VCS Score"])
         
     # Append common execution columns
     headers.extend(["Buy Range", "Stop Loss", "Swing Target", "Confidence", "Actionable Guidance & Reasoning"])
@@ -837,6 +846,8 @@ if 'wt_results_by_tf' not in st.session_state:
     st.session_state.wt_results_by_tf = {}
 if 'minervini_results' not in st.session_state:
     st.session_state.minervini_results = None
+if 'vcs_results' not in st.session_state:
+    st.session_state.vcs_results = None
 # Initialize global status dictionary if not present (shared across all threads/sessions)
 if "MOMENTUM_SCAN_STATUS" not in globals():
     global MOMENTUM_SCAN_STATUS
@@ -1245,6 +1256,10 @@ if st.session_state.scan_results is None and not st.session_state.get('db_cache_
                     st.session_state.minervini_results = ensure_minervini_fields(database.get_cached_trend_setups(latest_date_str, 'minervini'))
                 except Exception:
                     st.session_state.minervini_results = []
+                try:
+                    st.session_state.vcs_results = []
+                except Exception:
+                    pass
                 
                 st.session_state.total_scanned = cached_log.get('total_scanned', 0)
                 st.session_state.failed_count = 0
@@ -1346,6 +1361,11 @@ above_50dma_only = st.sidebar.checkbox(
     value=False,
     help="If checked, only lists breakout stocks trading above their 50-day Simple Moving Average"
 )
+above_200dma_only = st.sidebar.checkbox(
+    "Above 200 DMA Only",
+    value=False,
+    help="If checked, only lists breakout stocks trading above their 200-day Simple Moving Average"
+)
 
 st.sidebar.markdown('---')
 
@@ -1357,10 +1377,17 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         universe_key = "NIFTY 50"
     elif "NIFTY 100" in universe_selection:
         universe_key = "NIFTY 100"
+    elif "WATCHLIST" in universe_selection.upper():
+        universe_key = "WATCHLIST"
     else:
         universe_key = "ALL NSE"
         
-    raw_symbols = get_index_stocks(universe_key)
+    if universe_key == "WATCHLIST":
+        import watchlist
+        wl = watchlist.load_watchlist()
+        raw_symbols = [s for s in wl['symbol'].tolist() if pd.notna(s)]
+    else:
+        raw_symbols = get_index_stocks(universe_key)
         
     if not raw_symbols:
         st.sidebar.error("❌ No symbols found to scan.")
@@ -1461,6 +1488,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         crossover_ma_list = []
         minervini_list = []
         wt_list = []
+        vcs_list = []
         
         # Unpack manual dry constraints from the sidebar range slider
         min_dry = dry_zone_range[0]
@@ -1647,10 +1675,24 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                             "recommendation": above_recommendation
                         })
                         
-                    # 2. Support at 65 SMA
-                    is_near_65 = 0.0 <= (c_val - sma65) / sma65 <= 0.02
-                    is_test_65 = l_val <= sma65 and c_val > sma65
-                    if is_near_65 or is_test_65:
+                    # 2. Support at 65 SMA (Bounce & Up Move)
+                    # Must have tested the 65 SMA recently (Low within 1% above, or dropped below it)
+                    yesterday_l = float(yesterday_row['Low'])
+                    yesterday_sma65 = float(yesterday_row['SMA65'])
+                    
+                    tested_today = l_val <= sma65 * 1.01
+                    tested_yesterday = yesterday_l <= yesterday_sma65 * 1.01
+                    
+                    # Must be moving up (Green candle AND higher than yesterday's close)
+                    o_val = float(today_row['Open'])
+                    yesterday_c = float(yesterday_row['Close'])
+                    is_green_candle = c_val > o_val
+                    is_up_move = c_val > yesterday_c
+                    
+                    # Must hold above the 65 SMA
+                    holds_above = c_val > sma65
+                    
+                    if (tested_today or tested_yesterday) and holds_above and is_green_candle and is_up_move:
                         support_buy_price = round(today_close_val, 2)
                         support_exit_price = round(sma65 * 0.97, 2) 
                         support_target_price = round(today_close_val * 1.15, 2) 
@@ -1824,7 +1866,8 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                     if mcap_crores >= 3000.0:
                         scan_res['market_cap_cr'] = mcap_crores
                         if scan_res['signal_strength'] >= min_signal_str:
-                            if not above_50dma_only or scan_res['above_50dma']:
+                            if (not above_50dma_only or scan_res.get('above_50dma', False)) and \
+                               (not above_200dma_only or scan_res.get('above_200dma', False)):
                                 flagged_list.append(scan_res)
                             
                 # Scan coiled spring VCP setups
@@ -1865,6 +1908,11 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                     if wt_res is not None:
                         wt_res['timeframe'] = "Daily"
                         wt_list.append(wt_res)
+                        
+                if df is not None:
+                    vcs_res = scan_vcs(sym, df)
+                    if vcs_res is not None:
+                        vcs_list.append(vcs_res)
                             
         # Clean progress assets
         prog_bar.empty()
@@ -1878,6 +1926,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         st.session_state.support_ma_results = support_ma_list
         st.session_state.crossover_ma_results = crossover_ma_list
         st.session_state.minervini_results = minervini_list
+        st.session_state.vcs_results = vcs_list
         st.session_state.wt_results = wt_list
         st.session_state.wt_results_by_tf = {"Daily": wt_list}
         st.session_state.total_scanned = n_stocks
@@ -1969,7 +2018,7 @@ with st.sidebar.expander("🎓 Institutional Buy Signals Guide", expanded=False)
 
 # --- MAIN INTERFACE TABS ---
 try:
-    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_monthly_mom, tab_weekly_mom, tab_history = st.tabs([
+    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_monthly_mom, tab_weekly_mom, tab_history, tab_vcs = st.tabs([
         "📊 Scanner Results",
         "📈 Stock Detail",
         "📋 My Watchlist",
@@ -1983,7 +2032,8 @@ try:
         "🏆 Minervini Stage-2",
         "📅 Monthly Momentum",
         "📈 Weekly Momentum",
-        "📅 Scan History"
+        "📅 Scan History",
+        "📉 Volatility Contraction (VCS)"
     ])
 except Exception as tab_err:
     st.error(f"❌ Tab rendering error: {tab_err}")
@@ -2053,6 +2103,7 @@ with tab_scan:
                     "Market Cap (Cr)": round(r.get('market_cap_cr', 3000.0), 1),
                     "Signal Strength": r.get('signal_strength', 0.0),
                     "Above 50 DMA": r.get('above_50dma', False),
+                    "Above 200 DMA": r.get('above_200dma', False),
                     "Dry Start Date": _safe_date(r.get('dry_start_date')),
                     "Dry End Date": _safe_date(r.get('dry_end_date')),
                 })
@@ -3512,6 +3563,11 @@ with tab_wavetrend:
         value=False,
         help="Show only stocks currently trading above their 50 SMA trend filter"
     )
+    wt_above_200sma = wt_filter_col3.checkbox(
+        "🛡️ Above 200 DMA Only",
+        value=False,
+        help="Show only stocks currently trading above their 200 SMA long-term trend filter"
+    )
     
     # 2. Main Scan Table
     if wt_data is None:
@@ -3527,6 +3583,8 @@ with tab_wavetrend:
             display_wt = [r for r in display_wt if r.get('above_20sma', False)]
         if wt_above_50sma:
             display_wt = [r for r in display_wt if r.get('above_50sma', False)]
+        if wt_above_200sma:
+            display_wt = [r for r in display_wt if r.get('above_200sma', False)]
         
         # Sort by WT value ascending (deepest oversold first)
         sorted_wt = sorted(display_wt, key=lambda x: x['wt_value'])
@@ -3548,6 +3606,7 @@ with tab_wavetrend:
                     "Buy Signal": r.get('buy_signal', False),
                     "Above 20 SMA": r.get('above_20sma', False),
                     "Above 50 SMA": r.get('above_50sma', False),
+                   "Above 200 SMA": r.get('above_200sma', False),
                     "Volume": int(r.get('volume', 0)),
                     "Buy Range (₹)": r.get('buy_price', r.get('cmp', 0)),
                     "Stop Loss (₹)": r.get('exit_price', 0),
@@ -4581,3 +4640,107 @@ with tab_weekly_mom:
             f'</table></div></div>',
             unsafe_allow_html=True
         )
+
+
+# ==============================================================================
+# TAB VCS: VOLATILITY CONTRACTION SCANNER
+# ==============================================================================
+with tab_vcs:
+    st.markdown("### 📉 Volatility Contraction Scanner (VCS)")
+    st.markdown("Identifies stocks with tightening ATR, Standard Deviation, and Volume contraction.")
+    
+    st.markdown("#### Scanner Parameters")
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    with col1:
+        vcs_timeframe = st.selectbox("Timeframe", ["Daily (1d)", "Weekly (1wk)"], index=0)
+    with col2:
+        vcs_len_short = st.number_input("Short ATR Len", min_value=1, max_value=100, value=13)
+    with col3:
+        vcs_len_long = st.number_input("Long ATR Len", min_value=1, max_value=200, value=63)
+    with col4:
+        vcs_len_vol = st.number_input("Volume Len", min_value=1, max_value=200, value=50)
+    with col5:
+        vcs_sensitivity = st.number_input("Sensitivity", min_value=0.1, max_value=10.0, value=2.0, step=0.1)
+    with col6:
+        vcs_max_score = st.number_input("Max Score Limit", min_value=1.0, max_value=100.0, value=10.0, step=1.0)
+        
+    run_vcs_btn = st.button("🔍 Run Custom VCS Scan", use_container_width=True, type="primary")
+    
+    if run_vcs_btn:
+        vcs_interval = "1wk" if "Weekly" in vcs_timeframe else "1d"
+        vcs_period = "5y" if vcs_interval == "1wk" else "1y"
+        with st.spinner(f"Running custom VCS scan... downloading {vcs_timeframe} data..."):
+            if "NIFTY 50" in universe_selection:
+                universe_key = "NIFTY 50"
+            elif "NIFTY 100" in universe_selection:
+                universe_key = "NIFTY 100"
+            elif "WATCHLIST" in universe_selection.upper():
+                universe_key = "WATCHLIST"
+            else:
+                universe_key = "ALL NSE"
+                
+            if universe_key == "WATCHLIST":
+                import watchlist
+                wl = watchlist.load_watchlist()
+                custom_candidates = [s for s in wl['symbol'].tolist() if pd.notna(s)]
+            else:
+                custom_candidates = get_index_stocks(universe_key)
+            
+            custom_vcs_results = []
+            chunk_size = 50
+            chunks = [custom_candidates[i:i+chunk_size] for i in range(0, len(custom_candidates), chunk_size)]
+            
+            for c_idx, chunk in enumerate(chunks):
+                tkrs = [f"{s}.NS" for s in chunk]
+                try:
+                    df_vcs = yf.download(tickers=tkrs, period=vcs_period, interval=vcs_interval, progress=False)
+                    if not df_vcs.empty:
+                        for sym in chunk:
+                            try:
+                                if isinstance(df_vcs.columns, pd.MultiIndex):
+                                    all_tkrs = df_vcs.columns.get_level_values(1).unique().tolist()
+                                    matched_t = next((t for t in all_tkrs if t.upper() == f"{sym}.NS".upper()), None)
+                                    if not matched_t:
+                                        continue
+                                    t_df = df_vcs.xs(matched_t, axis=1, level=1).dropna(subset=['Close'])
+                                else:
+                                    t_df = df_vcs.dropna(subset=['Close'])
+                                    
+                                if not t_df.empty and len(t_df) >= vcs_len_long:
+                                    t_df = t_df.reset_index()
+                                    t_df.rename(columns={t_df.columns[0]: 'Date'}, inplace=True)
+                                    res = scan_vcs(sym, t_df, 
+                                                   lenShort=vcs_len_short, 
+                                                   lenLong=vcs_len_long, 
+                                                   lenVol=vcs_len_vol, 
+                                                   sensitivity=vcs_sensitivity, 
+                                                   max_score=vcs_max_score)
+                                    if res:
+                                        custom_vcs_results.append(res)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            
+            st.session_state.vcs_results = custom_vcs_results
+            st.success(f"Custom VCS Scan Complete! Found {len(custom_vcs_results)} stocks.")
+
+    st.markdown("---")
+    
+    if st.session_state.vcs_results is None:
+        st.info("💡 Adjust parameters above and click 'Run Custom VCS Scan' to find setups, or run the global scanner from the sidebar.")
+    elif len(st.session_state.vcs_results) == 0:
+        st.info(f"ℹ️ No VCS setups found with a score < {vcs_max_score} today.")
+    else:
+        col_btn, _ = st.columns([2, 8])
+        with col_btn:
+            vcs_df = pd.DataFrame(st.session_state.vcs_results)
+            csv_data = vcs_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ Download CSV",
+                data=csv_data,
+                file_name="vcs_scan_results.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        render_unified_strategy_table(st.session_state.vcs_results, "vcs", "vcs_tab")

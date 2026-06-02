@@ -232,6 +232,7 @@ def init_db() -> bool:
             "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS run_up_200 DOUBLE PRECISION;",
             "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS run_up_52w DOUBLE PRECISION;",
             "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS is_early BOOLEAN;",
+            "ALTER TABLE scanned_breakouts ADD COLUMN IF NOT EXISTS above_200dma BOOLEAN DEFAULT FALSE;",
             
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS buy_price DOUBLE PRECISION;",
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION;",
@@ -243,6 +244,7 @@ def init_db() -> bool:
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS wt_diff DOUBLE PRECISION;",
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS above_20sma BOOLEAN DEFAULT FALSE;",
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS above_50sma BOOLEAN DEFAULT FALSE;",
+            "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS above_200sma BOOLEAN DEFAULT FALSE;",
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS volume BIGINT;",
             
             # Scanned Monthly Momentum Table Migrations
@@ -437,7 +439,7 @@ def get_cached_breakouts(date_str: str) -> list[dict]:
     query = """
     SELECT symbol, company_name, cmp, day_change_pct, today_volume, dry_avg_vol, 
            volume_ratio, dry_days_count, dry_spikes, market_cap_cr, signal_strength, 
-           above_50dma, dry_start_date, dry_end_date, scan_date,
+           above_50dma, above_200dma, dry_start_date, dry_end_date, scan_date,
            buy_price, exit_price, target_price, confidence, recommendation
     FROM scanned_breakouts
     WHERE scan_date = %s;
@@ -559,7 +561,7 @@ def get_cached_wt_cross(date_str: str) -> list[dict]:
     query = """
     SELECT symbol, company_name, cmp, day_change_pct, wt_value, scan_date,
            buy_price, exit_price, target_price, confidence, recommendation,
-           wt2_value, buy_signal, wt_diff, above_20sma, above_50sma, volume
+           wt2_value, buy_signal, wt_diff, above_20sma, above_50sma, above_200sma, volume
     FROM scanned_wt_cross
     WHERE scan_date = %s;
     """
@@ -580,6 +582,7 @@ def get_cached_wt_cross(date_str: str) -> list[dict]:
             r_dict['wt_diff'] = float(r_dict.get('wt_diff') or 0.0)
             r_dict['above_20sma'] = bool(r_dict.get('above_20sma', False))
             r_dict['above_50sma'] = bool(r_dict.get('above_50sma', False))
+            r_dict['above_200sma'] = bool(r_dict.get('above_200sma', False))
             r_dict['volume'] = int(r_dict.get('volume') or 0)
             results.append(r_dict)
     except Exception as e:
@@ -611,10 +614,10 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         insert_breakout_query = """
         INSERT INTO scanned_breakouts (symbol, company_name, cmp, day_change_pct, today_volume, 
                                       dry_avg_vol, volume_ratio, dry_days_count, dry_spikes, 
-                                      market_cap_cr, signal_strength, above_50dma, dry_start_date, 
+                                      market_cap_cr, signal_strength, above_50dma, above_200dma, dry_start_date, 
                                       dry_end_date, scan_date, buy_price, exit_price, target_price, 
                                       confidence, recommendation)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in breakouts:
             cur.execute(insert_breakout_query, (
@@ -629,7 +632,8 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 int(r['dry_spikes']),
                 float(r['market_cap_cr']), 
                 float(r['signal_strength']), 
-                bool(r['above_50dma']),
+                bool(r.get('above_50dma', False)),
+                bool(r.get('above_200dma', False)),
                 r['dry_start_date'].strftime("%Y-%m-%d") if hasattr(r['dry_start_date'], 'strftime') else str(r['dry_start_date']), 
                 r['dry_end_date'].strftime("%Y-%m-%d") if hasattr(r['dry_end_date'], 'strftime') else str(r['dry_end_date']),
                 date_str,
@@ -719,8 +723,8 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         insert_wt_query = """
         INSERT INTO scanned_wt_cross (symbol, company_name, cmp, day_change_pct, wt_value, scan_date,
                                      buy_price, exit_price, target_price, confidence, recommendation,
-                                     wt2_value, buy_signal, wt_diff, above_20sma, above_50sma, volume)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                     wt2_value, buy_signal, wt_diff, above_20sma, above_50sma, above_200sma, volume)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in wt_cross:
             cur.execute(insert_wt_query, (
@@ -740,6 +744,7 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 float(r['wt_diff']) if r.get('wt_diff') is not None else None,
                 bool(r.get('above_20sma', False)),
                 bool(r.get('above_50sma', False)),
+                bool(r.get('above_200sma', False)),
                 int(r.get('volume', 0))
             ))
             
@@ -781,7 +786,7 @@ def save_monthly_momentum_results(date_str: str, results: list[dict]) -> bool:
             volume, vol_sma12, market_cap_cr, momentum_score, buy_price, exit_price, target_price, 
             confidence, recommendation, return_1m, scan_date
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in results:
             cur.execute(insert_query, (
