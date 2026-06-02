@@ -1092,20 +1092,26 @@ def scan_vcs(symbol: str, df: pd.DataFrame, lenShort=13, lenLong=63, lenVol=50, 
 
         df_copy["TR"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-        # ATR contraction
-        df_copy["trShort"] = df_copy["TR"].rolling(lenShort).mean()
-        df_copy["trLong"] = df_copy["TR"].rolling(lenLong).mean()
+        # ATR contraction (Normalized by price)
+        df_copy["TR_pct"] = df_copy["TR"] / df_copy["prev_close"].replace(0, pd.NA)
+        df_copy["trShort"] = df_copy["TR_pct"].rolling(lenShort).mean()
+        df_copy["trLong"] = df_copy["TR_pct"].rolling(lenLong).mean()
         df_copy["ratioATR"] = df_copy["trShort"] / df_copy["trLong"]
 
-        # STANDARD DEVIATION CONTRACTION
-        df_copy["stdShort"] = df_copy["Close"].rolling(lenShort).std()
-        df_copy["stdLong"] = df_copy["Close"].rolling(lenLong).std()
+        # STANDARD DEVIATION CONTRACTION (Using daily returns)
+        df_copy["ret"] = df_copy["Close"].pct_change()
+        df_copy["stdShort"] = df_copy["ret"].rolling(lenShort).std()
+        df_copy["stdLong"] = df_copy["ret"].rolling(lenLong).std()
         df_copy["ratioStd"] = df_copy["stdShort"] / df_copy["stdLong"]
 
         # VOLUME CONTRACTION
         df_copy["volAvg"] = df_copy["Volume"].rolling(lenVol).mean()
         df_copy["volShort"] = df_copy["Volume"].rolling(5).mean()
         df_copy["volRatio"] = df_copy["volShort"] / df_copy["volAvg"]
+
+        # TREND FILTER (Minervini VCP requires an uptrend)
+        df_copy["sma50"] = df_copy["Close"].rolling(50).mean()
+        df_copy["sma200"] = df_copy["Close"].rolling(200).mean()
 
         # SCORE CALCULATION
         df_copy["s_atr"] = df_copy["ratioATR"] * sensitivity
@@ -1125,6 +1131,15 @@ def scan_vcs(symbol: str, df: pd.DataFrame, lenShort=13, lenLong=63, lenVol=50, 
         if pd.isna(today_score):
             return None
             
+        today_close = df_copy["Close"].iloc[-1]
+        today_sma50 = df_copy["sma50"].iloc[-1]
+        today_sma200 = df_copy["sma200"].iloc[-1]
+        today_vol_avg = df_copy["volAvg"].iloc[-1]
+        
+        # Ensure stock is in a solid uptrend and has reasonable liquidity
+        if pd.isna(today_sma200) or today_close < today_sma50 or today_close < today_sma200 or today_sma50 < today_sma200 or today_vol_avg < 50000:
+            return None
+
         if today_score <= max_score:
             today = df_copy.iloc[-1]
             yesterday = df_copy.iloc[-2] if len(df_copy) >= 2 else today
