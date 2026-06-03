@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 from config import IST_TIMEZONE, get_company_name, DRY_ZONE_MIN_DAYS, DRY_ZONE_MAX_DAYS, MIN_VOLUME_RATIO, MIN_PRICE_CHANGE
 from data_fetcher import fetch_ohlcv, get_index_stocks, fetch_ohlcv_timeframe
-from scanner import scan_stock, scan_coiled_spring, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum, scan_vcs
+from scanner import scan_stock, scan_coiled_spring, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum, scan_vcs, scan_monthly_early_stage2
 
 import watchlist
 from utils import inject_premium_css, get_signal_badge_html, get_day_change_badge_html
@@ -1392,6 +1392,10 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
     if not raw_symbols:
         st.sidebar.error("❌ No symbols found to scan.")
     else:
+        # UI Scanner Feedback
+        status_box = st.empty()
+        prog_bar = st.progress(0)
+        
         # Step A: Perform high-speed parallel bulk download of today's quotes to filter Price > 200 instantly
         all_tickers_ns = []
         for s in raw_symbols:
@@ -1405,75 +1409,78 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         volume_map = {}
         high_price_map = {}
         low_price_map = {}
-        with st.spinner("Downloading real-time quotes for selected universe in parallel..."):
-            import time
-            chunk_size = 300
-            ticker_chunks = [all_tickers_ns[i:i + chunk_size] for i in range(0, len(all_tickers_ns), chunk_size)]
-            
-            for idx, chunk in enumerate(ticker_chunks):
-                retries = 0
-                max_retries = 3
-                backoff = 2.0
-                while retries <= max_retries:
-                    try:
-                        # yfinance 1.x: auto_adjust=True by default, threads param removed
-                        quotes_df = yf.download(tickers=chunk, period="1d", progress=False, threads=False)
-                        if not quotes_df.empty:
-                            # yfinance 1.x multi-ticker: MultiIndex (price_type, ticker)
-                            if isinstance(quotes_df.columns, pd.MultiIndex):
-                                # Level 0 = price type (Close/Open/etc), Level 1 = ticker symbol
-                                price_types = quotes_df.columns.get_level_values(0).unique().tolist()
-                                tickers_in_idx = quotes_df.columns.get_level_values(1).unique().tolist()
-                                # Build per-field Series indexed by ticker (with .NS suffix preserved)
-                                def _get_field_series(field):
-                                    if field in price_types:
-                                        s = quotes_df[field].iloc[-1]
-                                        return s
-                                    return pd.Series(dtype=float)
-                                close_series = _get_field_series('Close')
-                                open_series = _get_field_series('Open')
-                                volume_series = _get_field_series('Volume')
-                                high_series = _get_field_series('High')
-                                low_series = _get_field_series('Low')
-                            else:
-                                # Single ticker fallback
-                                ticker_key = chunk[0]
-                                close_series = pd.Series({ticker_key: quotes_df['Close'].iloc[-1]})
-                                open_series = pd.Series({ticker_key: quotes_df['Open'].iloc[-1]}) if 'Open' in quotes_df else close_series
-                                volume_series = pd.Series({ticker_key: quotes_df['Volume'].iloc[-1]}) if 'Volume' in quotes_df else pd.Series({ticker_key: 0})
-                                high_series = pd.Series({ticker_key: quotes_df['High'].iloc[-1]}) if 'High' in quotes_df else close_series
-                                low_series = pd.Series({ticker_key: quotes_df['Low'].iloc[-1]}) if 'Low' in quotes_df else close_series
-
-                            # Map prices back to plain symbols (strip .NS suffix)
-                            # IMPORTANT: index still has .NS suffix, so use k directly for lookup
-                            for k, v in close_series.items():
-                                clean_k = str(k).replace(".NS", "").upper()
-                                if not pd.isna(v) and float(v) > 0:
-                                    close_price_map[clean_k] = float(v)
-                                    # Use original k (with .NS) to look up in the other series
-                                    if k in open_series.index and not pd.isna(open_series[k]):
-                                        open_price_map[clean_k] = float(open_series[k])
-                                    if k in volume_series.index and not pd.isna(volume_series[k]):
-                                        volume_map[clean_k] = int(volume_series[k])
-                                    if k in high_series.index and not pd.isna(high_series[k]):
-                                        high_price_map[clean_k] = float(high_series[k])
-                                    if k in low_series.index and not pd.isna(low_series[k]):
-                                        low_price_map[clean_k] = float(low_series[k])
-                            # Successfully loaded chunk
-                            break
+        
+        status_box.text("Phase 1/3: Downloading real-time quotes for selected universe...")
+        import time
+        chunk_size = 300
+        ticker_chunks = [all_tickers_ns[i:i + chunk_size] for i in range(0, len(all_tickers_ns), chunk_size)]
+        
+        for idx, chunk in enumerate(ticker_chunks):
+            prog_bar.progress(idx / len(ticker_chunks))
+            status_box.text(f"Phase 1/3: Downloading real-time quotes (Chunk {idx+1}/{len(ticker_chunks)})...")
+            retries = 0
+            max_retries = 3
+            backoff = 2.0
+            while retries <= max_retries:
+                try:
+                    # yfinance 1.x: auto_adjust=True by default, threads param removed
+                    quotes_df = yf.download(tickers=chunk, period="1d", progress=False, threads=False)
+                    if not quotes_df.empty:
+                        # yfinance 1.x multi-ticker: MultiIndex (price_type, ticker)
+                        if isinstance(quotes_df.columns, pd.MultiIndex):
+                            # Level 0 = price type (Close/Open/etc), Level 1 = ticker symbol
+                            price_types = quotes_df.columns.get_level_values(0).unique().tolist()
+                            tickers_in_idx = quotes_df.columns.get_level_values(1).unique().tolist()
+                            # Build per-field Series indexed by ticker (with .NS suffix preserved)
+                            def _get_field_series(field):
+                                if field in price_types:
+                                    s = quotes_df[field].iloc[-1]
+                                    return s
+                                return pd.Series(dtype=float)
+                            close_series = _get_field_series('Close')
+                            open_series = _get_field_series('Open')
+                            volume_series = _get_field_series('Volume')
+                            high_series = _get_field_series('High')
+                            low_series = _get_field_series('Low')
                         else:
-                            raise ValueError("Empty DataFrame returned")
-                    except Exception as chunk_ex:
-                        retries += 1
-                        if retries > max_retries:
-                            print(f"Error downloading quote chunk {idx+1}/{len(ticker_chunks)} after {max_retries} retries: {chunk_ex}")
-                            break
-                        print(f"Rate limited or quote download failed for chunk {idx+1}/{len(ticker_chunks)}. Retrying in {backoff}s... (Error: {chunk_ex})")
-                        time.sleep(backoff)
-                        backoff *= 2.0
-                        
-                # Short cooldown between successful chunks to keep Yahoo Finance happy
-                time.sleep(1.0)
+                            # Single ticker fallback
+                            ticker_key = chunk[0]
+                            close_series = pd.Series({ticker_key: quotes_df['Close'].iloc[-1]})
+                            open_series = pd.Series({ticker_key: quotes_df['Open'].iloc[-1]}) if 'Open' in quotes_df else close_series
+                            volume_series = pd.Series({ticker_key: quotes_df['Volume'].iloc[-1]}) if 'Volume' in quotes_df else pd.Series({ticker_key: 0})
+                            high_series = pd.Series({ticker_key: quotes_df['High'].iloc[-1]}) if 'High' in quotes_df else close_series
+                            low_series = pd.Series({ticker_key: quotes_df['Low'].iloc[-1]}) if 'Low' in quotes_df else close_series
+
+                        # Map prices back to plain symbols (strip .NS suffix)
+                        # IMPORTANT: index still has .NS suffix, so use k directly for lookup
+                        for k, v in close_series.items():
+                            clean_k = str(k).replace(".NS", "").upper()
+                            if not pd.isna(v) and float(v) > 0:
+                                close_price_map[clean_k] = float(v)
+                                # Use original k (with .NS) to look up in the other series
+                                if k in open_series.index and not pd.isna(open_series[k]):
+                                    open_price_map[clean_k] = float(open_series[k])
+                                if k in volume_series.index and not pd.isna(volume_series[k]):
+                                    volume_map[clean_k] = int(volume_series[k])
+                                if k in high_series.index and not pd.isna(high_series[k]):
+                                    high_price_map[clean_k] = float(high_series[k])
+                                if k in low_series.index and not pd.isna(low_series[k]):
+                                    low_price_map[clean_k] = float(low_series[k])
+                        # Successfully loaded chunk
+                        break
+                    else:
+                        raise ValueError("Empty DataFrame returned")
+                except Exception as chunk_ex:
+                    retries += 1
+                    if retries > max_retries:
+                        print(f"Error downloading quote chunk {idx+1}/{len(ticker_chunks)} after {max_retries} retries: {chunk_ex}")
+                        break
+                    print(f"Rate limited or quote download failed for chunk {idx+1}/{len(ticker_chunks)}. Retrying in {backoff}s... (Error: {chunk_ex})")
+                    time.sleep(backoff)
+                    backoff *= 2.0
+                    
+            # Short cooldown between successful chunks to keep Yahoo Finance happy
+            time.sleep(1.0)
                 
         # Fast filter Price > 200 (reduces scanning load immensely by removing penny and low-priced stocks)
         scan_symbols = [s for s in raw_symbols if close_price_map.get(s.strip().upper(), 0.0) > 200.0]
@@ -1494,20 +1501,18 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         min_dry = dry_zone_range[0]
         max_dry = dry_zone_range[1]
             
-        # UI Scanner Feedback
-        prog_bar = st.progress(0)
-        status_box = st.empty()
-        
         # Parallel bulk pre-download of historical OHLCV data to boost scan speed by 25x!
         bulk_data = {}
         if n_stocks > 0:
             from config import LOOKBACK_DAYS
-            status_box.text("Downloading historical OHLCV data in bulk parallel chunks...")
+            status_box.text("Phase 2/3: Downloading historical OHLCV data...")
+            prog_bar.progress(0)
             chunk_size = 100
             sym_chunks = [scan_symbols[i:i + chunk_size] for i in range(0, len(scan_symbols), chunk_size)]
             
             for chunk_idx, chunk in enumerate(sym_chunks):
-                status_box.text(f"Downloading historical data: Chunk {chunk_idx+1}/{len(sym_chunks)}...")
+                prog_bar.progress(chunk_idx / len(sym_chunks))
+                status_box.text(f"Phase 2/3: Downloading historical data (Chunk {chunk_idx+1}/{len(sym_chunks)})...")
                 chunk_ns = [f"{s.strip().upper()}.NS" for s in chunk]
                 try:
                     # yfinance 1.x: group_by and threads params removed; MultiIndex is now (price_type, ticker)
@@ -1546,21 +1551,23 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                     print(f"Error downloading parallel chunk {chunk_idx+1}: {chunk_ex}")
         
         mcap_cache = {}
-        with st.spinner(f"Scanning {n_stocks} active NSE listed equities (Price > ₹200)..."):
-            for i, sym in enumerate(scan_symbols):
-                # Update text status and progress bar
-                status_box.text(f"Scanning: {sym} ({i+1}/{n_stocks})")
-                prog_bar.progress((i + 1) / n_stocks)
+        status_box.text(f"Phase 3/3: Scanning {n_stocks} active NSE listed equities (Price > ₹200)...")
+        prog_bar.progress(0)
+        
+        for i, sym in enumerate(scan_symbols):
+            # Update text status and progress bar
+            status_box.text(f"Phase 3/3: Scanning {sym} ({i+1}/{n_stocks})")
+            prog_bar.progress((i + 1) / n_stocks)
+            
+            # Fetch clean data
+            df = bulk_data.get(sym.strip().upper())
+            if df is None:
+                # Fallback to single download in case parallel chunk missed this stock
+                df = fetch_ohlcv(sym)
                 
-                # Fetch clean data
-                df = bulk_data.get(sym.strip().upper())
-                if df is None:
-                    # Fallback to single download in case parallel chunk missed this stock
-                    df = fetch_ohlcv(sym)
-                    
-                if df is None or len(df) < 5:
-                    failed_count += 1
-                    continue
+            if df is None or len(df) < 5:
+                failed_count += 1
+                continue
                     
                 # Dynamically append today's real-time quote candle if yfinance daily history has not yet included today
                 df = df.sort_values('Date').reset_index(drop=True)
@@ -2018,7 +2025,7 @@ with st.sidebar.expander("🎓 Institutional Buy Signals Guide", expanded=False)
 
 # --- MAIN INTERFACE TABS ---
 try:
-    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_monthly_mom, tab_weekly_mom, tab_history, tab_vcs = st.tabs([
+    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_monthly_mom, tab_weekly_mom, tab_history, tab_vcs, tab_stage2 = st.tabs([
         "📊 Scanner Results",
         "📈 Stock Detail",
         "📋 My Watchlist",
@@ -2033,7 +2040,8 @@ try:
         "📅 Monthly Momentum",
         "📈 Weekly Momentum",
         "📅 Scan History",
-        "📉 Volatility Contraction (VCS)"
+        "📉 Volatility Contraction (VCS)",
+        "🚀 Early Stage 2 Breakout"
     ])
 except Exception as tab_err:
     st.error(f"❌ Tab rendering error: {tab_err}")
@@ -4760,3 +4768,106 @@ with tab_vcs:
                 use_container_width=True
             )
         render_unified_strategy_table(st.session_state.vcs_results, "vcs", "vcs_tab")
+
+# ==============================================================================
+# TAB: EARLY STAGE 2 BREAKOUT
+# ==============================================================================
+st.warning("DEBUG: This should appear outside all tabs at the bottom.")
+with tab_stage2:
+    print("DEBUG: EXECUTING TAB STAGE 2")
+    st.markdown("### 🚀 Early Stage 2 Base Breakout Scanner")
+    st.markdown("Identifies stocks moving out of a long-term Stage 1 base on the monthly timeframe.")
+    
+    if 'stage2_results' not in st.session_state:
+        st.session_state.stage2_results = None
+        
+    s2_col1, s2_col2 = st.columns([2, 8])
+    with s2_col1:
+        s2_max_runup = st.number_input("Max Run-Up (%)", min_value=5.0, max_value=50.0, value=20.0, step=1.0)
+        run_stage2_btn = st.button("🔍 Run Stage 2 Scan", use_container_width=True, type="primary")
+        
+    if run_stage2_btn:
+        with st.spinner(f"Running Monthly Stage 2 Scan on {universe_selection}..."):
+            s2_universe = universe_selection
+            if "NIFTY 50" in s2_universe:
+                s2_key = "NIFTY 50"
+            elif "NIFTY 100" in s2_universe:
+                s2_key = "NIFTY 100"
+            elif "WATCHLIST" in s2_universe.upper():
+                s2_key = "WATCHLIST"
+            else:
+                s2_key = "NIFTY 500" # Better default for Stage 2 than all NSE
+                
+            if s2_key == "WATCHLIST":
+                import watchlist
+                wl = watchlist.load_watchlist()
+                s2_cands = [s for s in wl['symbol'].tolist() if pd.notna(s)]
+            else:
+                s2_cands = get_index_stocks(s2_key)
+                
+            s2_res = []
+            chunk_size = 50
+            chunks = [s2_cands[i:i+chunk_size] for i in range(0, len(s2_cands), chunk_size)]
+            
+            s2_prog = st.progress(0)
+            s2_status = st.empty()
+            
+            for c_idx, chunk in enumerate(chunks):
+                s2_status.text(f"Scanning chunk {c_idx + 1} of {len(chunks)}... ({len(s2_res)} found so far)")
+                tkrs = [f"{s}.NS" for s in chunk]
+                try:
+                    df_s2 = yf.download(tickers=tkrs, period="5y", interval="1mo", progress=False, threads=False)
+                    if not df_s2.empty:
+                        for sym in chunk:
+                            try:
+                                if isinstance(df_s2.columns, pd.MultiIndex):
+                                    all_tkrs = df_s2.columns.get_level_values(1).unique().tolist()
+                                    matched_t = next((t for t in all_tkrs if t.upper() == f"{sym}.NS".upper()), None)
+                                    if not matched_t: continue
+                                    t_df = df_s2.xs(matched_t, axis=1, level=1).dropna(subset=['Close'])
+                                else:
+                                    t_df = df_s2.dropna(subset=['Close'])
+                                    
+                                if not t_df.empty and len(t_df) >= 24:
+                                    t_df = t_df.reset_index()
+                                    t_df.rename(columns={t_df.columns[0]: 'Date'}, inplace=True)
+                                    res = scan_monthly_early_stage2(sym, t_df, max_run_up_pct=s2_max_runup)
+                                    if res:
+                                        s2_res.append(res)
+                            except Exception as parse_ex:
+                                pass
+                except Exception as down_ex:
+                    st.warning(f"Failed to download chunk {c_idx + 1}: {down_ex}")
+                    pass
+                
+                # Update progress bar
+                s2_prog.progress((c_idx + 1) / len(chunks))
+            
+            s2_prog.empty()
+            s2_status.empty()
+            
+            # Sort by signal strength
+            s2_res = sorted(s2_res, key=lambda x: x['signal_strength'], reverse=True)
+            st.session_state.stage2_results = s2_res
+            st.success(f"Stage 2 Scan Complete! Found {len(s2_res)} setups.")
+            
+    st.markdown("---")
+    
+    if st.session_state.stage2_results is None:
+        st.info("💡 Adjust parameters and click 'Run Stage 2 Scan' to find long-term breakouts.")
+    elif len(st.session_state.stage2_results) == 0:
+        st.info(f"ℹ️ No early Stage 2 setups found in {universe_selection} today.")
+    else:
+        dl_btn, _ = st.columns([2, 8])
+        with dl_btn:
+            s2_df = pd.DataFrame(st.session_state.stage2_results)
+            csv_data = s2_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ Download CSV",
+                data=csv_data,
+                file_name="stage2_scan_results.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        render_unified_strategy_table(st.session_state.stage2_results, "stage2", "stage2_tab")
+

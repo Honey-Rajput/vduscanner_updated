@@ -1177,3 +1177,109 @@ def scan_vcs(symbol: str, df: pd.DataFrame, lenShort=13, lenLong=63, lenVol=50, 
         print(f"VCS scan error for {symbol}: {e}")
         return None
 
+def scan_monthly_early_stage2(symbol: str, df_monthly: pd.DataFrame, max_run_up_pct: float = 20.0, market_cap_cr: float = 0.0) -> dict | None:
+    """
+    Scans monthly OHLCV data for an Early Stage 2 Base Breakout.
+    """
+    if df_monthly is None or len(df_monthly) < 36: # Need 3 years to assess trend and base
+        return None
+        
+    try:
+        import pandas as pd
+        df_copy = df_monthly.copy()
+        df_copy['SMA7'] = df_copy['Close'].rolling(window=7).mean()
+        
+        if pd.isna(df_copy['SMA7'].iloc[-1]):
+            return None
+            
+        today = df_copy.iloc[-1]
+        prev = df_copy.iloc[-2]
+        cmp = float(today['Close'].iloc[0] if isinstance(today['Close'], pd.Series) else today['Close'])
+        open_today = float(today['Open'].iloc[0] if isinstance(today['Open'], pd.Series) else today['Open'])
+        close_prev = float(prev['Close'].iloc[0] if isinstance(prev['Close'], pd.Series) else prev['Close'])
+        open_prev = float(prev['Open'].iloc[0] if isinstance(prev['Open'], pd.Series) else prev['Open'])
+        close_prev2 = float(df_copy.iloc[-3]['Close'].iloc[0] if isinstance(df_copy.iloc[-3]['Close'], pd.Series) else df_copy.iloc[-3]['Close'])
+
+        if cmp < 10.0: # Ignore penny stocks
+            return None
+            
+        # 1. Continuous Down Trend (Historical high vs Base low)
+        historical_high = float(df_copy.iloc[-36:-12]['High'].max())
+        
+        # 2. Created a proper base (Last 12 months consolidation)
+        base_period = df_copy.iloc[-12:]
+        base_high = float(base_period['High'].max())
+        base_bottom = float(base_period['Low'].min())
+        
+        # Must have fallen at least ~25% from the historical high to form the base
+        if historical_high < base_bottom * 1.25: 
+            return None
+            
+        # Base should be relatively tight, not extremely volatile (max 70% range)
+        base_range_pct = ((base_high - base_bottom) / base_bottom) * 100.0
+        if base_range_pct > 70.0: 
+            return None
+            
+        # 3. Uptrend Initiation: CMP > 7-month SMA
+        sma7 = float(today['SMA7'].iloc[0] if isinstance(today['SMA7'], pd.Series) else today['SMA7'])
+        if cmp <= sma7:
+            return None
+            
+        # 4. Recent Bullish Action: Current or prev month is a green candle
+        curr_green = (cmp > open_today) or (cmp > close_prev)
+        prev_green = (close_prev > open_prev) or (close_prev > close_prev2)
+        if not (curr_green or prev_green):
+            return None
+            
+        # 5. Run-up Limit: Not extended more than max_run_up_pct% above the 7-month SMA
+        extension_from_sma = ((cmp - sma7) / sma7) * 100.0
+        if extension_from_sma > max_run_up_pct or extension_from_sma < 0:
+            return None
+            
+        # Ensure the SMA is not still a steep falling knife
+        sma7_6m_ago = float(df_copy['SMA7'].iloc[-7])
+        if sma7 < sma7_6m_ago * 0.85: 
+            return None
+
+        # Base recommendation
+        day_change_pct = ((cmp - float(prev['Close'])) / float(prev['Close']) * 100) if len(df_copy) >= 2 else 0.0
+        
+        buy_price = round(cmp, 2)
+        exit_price = round(base_bottom * 0.95, 2) # Stop below base bottom
+        target_price = round(buy_price * 1.30, 2) # 30% target for Stage 2 breakout
+        
+        score = 100.0 - (extension_from_sma * 2.0) # Lower extension = higher score
+        score = round(max(0, min(100.0, score)), 1)
+        
+        confidence = "High" if score >= 80 else "Medium-High"
+        
+        base_rec = (
+            f"Early Stage 2 Base Breakout detected on Monthly timeframe! "
+            f"Stock formed a base at ₹{base_bottom:.2f} and is up {extension_from_sma:.1f}% from the 7-month SMA. "
+            f"It has now crossed the 7-Month SMA (₹{sma7:.2f}) with bullish monthly candles. "
+            f"Buy around ₹{buy_price:.2f}, SL below base ₹{exit_price:.2f}, target ₹{target_price:.2f}."
+        )
+        
+        recommendation = compute_rich_analysis(df_copy, symbol, "Stage 2 Breakout", base_rec)
+        
+        from config import get_company_name
+        company_name = get_company_name(symbol)
+        
+        return {
+            'symbol': symbol.strip().upper(),
+            'company_name': company_name,
+            'buy_price': buy_price,
+            'exit_price': exit_price,
+            'target_price': target_price,
+            'confidence': confidence,
+            'score': score,
+            'recommendation': recommendation,
+            'historical_high': round(historical_high, 2),
+            'base_bottom': round(base_bottom, 2),
+            'sma7': round(sma7, 2),
+            'extension': round(extension_from_sma, 1)
+        }
+
+    except Exception as e:
+        print(f"Stage 2 Early Breakout scan error for {symbol}: {e}")
+        return None
