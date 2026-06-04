@@ -4926,7 +4926,7 @@ with tab_vpa:
                 all_symbols = [s if s.endswith('.NS') else f"{s}.NS" for s in raw_symbols if str(s).strip()]
                 
                 # Phase 1: Bulk OHLCV Download (2 years history for Weekly/Monthly VPA)
-                st.info(f"Phase 1: Downloading 2 years of history for {len(all_symbols)} stocks...")
+                st.info(f"Phase 1: Downloading 5 years of history for {len(all_symbols)} stocks...")
                 prog = st.progress(0)
                 status = st.empty()
                 
@@ -4942,7 +4942,7 @@ with tab_vpa:
                     status.text(f"Fetching bulk history chunk {chunk_idx+1}/{len(sym_chunks)}...")
                     
                     try:
-                        df_bulk = yf.download(tickers=chunk, period="2y", interval="1d", progress=False, threads=True)
+                        df_bulk = yf.download(tickers=chunk, period="5y", interval="1d", progress=False, threads=True)
                         if isinstance(df_bulk.columns, pd.MultiIndex):
                             for sym in chunk:
                                 try:
