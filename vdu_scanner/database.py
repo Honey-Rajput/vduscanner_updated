@@ -721,6 +721,90 @@ def get_cached_vpa(date_str: str) -> list[dict]:
             conn.close()
     return results
 
+def save_vcs_only(date_str: str, vcs_results: list[dict]) -> bool:
+    """
+    UPSERTs only the VCS results for the given date.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM scanned_vcs WHERE scan_date = %s;", (date_str,))
+        
+        insert_vcs_query = """
+        INSERT INTO scanned_vcs (symbol, company_name, cmp, day_change_pct, vcs_score, volume, scan_date,
+                                 buy_price, exit_price, target_price, confidence, recommendation)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+        for r in vcs_results:
+            cur.execute(insert_vcs_query, (
+                str(r['symbol']),
+                str(r.get('company_name', "")),
+                float(r['cmp']),
+                float(r['day_change_pct']),
+                float(r['vcs_score']),
+                int(r.get('volume', 0)),
+                date_str,
+                float(r['buy_price']) if r.get('buy_price') is not None else None,
+                float(r['exit_price']) if r.get('exit_price') is not None else None,
+                float(r['target_price']) if r.get('target_price') is not None else None,
+                str(r['confidence']) if r.get('confidence') is not None else None,
+                str(r['recommendation']) if r.get('recommendation') is not None else None
+            ))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        if conn:
+            conn.close()
+        print(f"Error saving VCS only: {e}")
+        return False
+
+def save_vpa_only(date_str: str, vpa_results: list[dict]) -> bool:
+    """
+    UPSERTs only the VPA results for the given date.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM scanned_vpa WHERE scan_date = %s;", (date_str,))
+        
+        insert_vpa_query = """
+        INSERT INTO scanned_vpa (symbol, company_name, cmp, day_change_pct, volume, vpa_score, 
+                                 daily_major, daily_mid, daily_minor, 
+                                 weekly_major, weekly_mid, weekly_minor, 
+                                 monthly_major, monthly_mid, monthly_minor, scan_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+        for r in vpa_results:
+            cur.execute(insert_vpa_query, (
+                str(r['symbol']),
+                str(r.get('company_name', "")),
+                float(r['cmp']),
+                float(r['day_change_pct']),
+                int(r.get('volume', 0)),
+                int(r.get('score', 0)),
+                int(r.get('daily', {}).get('major', 0)),
+                int(r.get('daily', {}).get('mid', 0)),
+                int(r.get('daily', {}).get('minor', 0)),
+                int(r.get('weekly', {}).get('major', 0)),
+                int(r.get('weekly', {}).get('mid', 0)),
+                int(r.get('weekly', {}).get('minor', 0)),
+                int(r.get('monthly', {}).get('major', 0)),
+                int(r.get('monthly', {}).get('mid', 0)),
+                int(r.get('monthly', {}).get('minor', 0)),
+                date_str
+            ))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        if conn:
+            conn.close()
+        print(f"Error saving VPA only: {e}")
+        return False
+
 def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict], gapups: list[dict], trend_setups: list[dict], wt_cross: list[dict], total_scanned: int, vcs_results: list[dict] = None, vpa_results: list[dict] = None) -> bool:
     """
     Saves the full market scan results and logs the completion.

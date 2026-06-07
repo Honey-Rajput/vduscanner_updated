@@ -4773,6 +4773,8 @@ with tab_vcs:
                                                    sensitivity=vcs_sensitivity, 
                                                    max_score=vcs_max_score)
                                     if res:
+                                        res['Timeframe'] = vcs_timeframe
+                                        res['Action'] = res.get('recommendation', 'Wait')
                                         custom_vcs_results.append(res)
                             except Exception:
                                 pass
@@ -4780,7 +4782,12 @@ with tab_vcs:
                     pass
             
             st.session_state.vcs_results = custom_vcs_results
-            st.success(f"Custom VCS Scan Complete! Found {len(custom_vcs_results)} stocks.")
+            try:
+                today_ist_str = datetime.now(IST_TIMEZONE).strftime("%Y-%m-%d")
+                database.save_vcs_only(today_ist_str, custom_vcs_results)
+            except Exception as e:
+                print(f"Failed to cache custom VCS scan: {e}")
+            st.success(f"Custom VCS Scan Complete! Found {len(custom_vcs_results)} stocks and saved to database.")
 
     st.markdown("---")
     
@@ -5021,7 +5028,12 @@ with tab_vpa:
                 prog.empty()
                 status.empty()
                 st.session_state.vpa_results = vpa_list
-                st.success(f"VPA Scan complete! Found {len(vpa_list)} stocks meeting all criteria.")
+                try:
+                    today_ist_str = datetime.now(IST_TIMEZONE).strftime("%Y-%m-%d")
+                    database.save_vpa_only(today_ist_str, vpa_list)
+                except Exception as e:
+                    print(f"Failed to cache custom VPA scan: {e}")
+                st.success(f"VPA Scan complete! Found {len(vpa_list)} stocks meeting all criteria and saved to database.")
                 
             except Exception as e:
                 st.error(f"Scan failed: {e}")
