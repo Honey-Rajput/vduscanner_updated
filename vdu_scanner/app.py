@@ -1908,31 +1908,10 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
             )
             
             if scan_res is not None:
-                # Lazy market cap filter for matching breakouts (keeps scan extremely fast!)
-                formatted_sym = sym.strip().upper()
-                if not formatted_sym.endswith(".NS"):
-                    formatted_sym = f"{formatted_sym}.NS"
-                    
-                if formatted_sym in mcap_cache:
-                    mcap_crores = mcap_cache[formatted_sym]
-                elif universe_key in ["NIFTY 50", "NIFTY 100"]:
-                    mcap_crores = 15000.0  # By definition > 3000 Cr, skip network lookup
-                    mcap_cache[formatted_sym] = mcap_crores
-                else:
-                    try:
-                        ticker_obj = yf.Ticker(formatted_sym)
-                        mcap = getattr(ticker_obj.fast_info, 'market_cap', None) or 0
-                        if mcap and mcap > 0:
-                            mcap_crores = mcap / 1e7
-                        else:
-                            mcap_crores = 3500.0  # Fallback to pass if API is rate limited
-                    except Exception:
-                        mcap_crores = 3500.0
-                    mcap_cache[formatted_sym] = mcap_crores
-                
-                # Hard filter: Market Cap >= 3000 Crore
-                if mcap_crores >= 3000.0:
-                    scan_res['market_cap_cr'] = mcap_crores
+                # Market Cap filter bypassed
+                mcap_crores = 0.0
+                scan_res['market_cap_cr'] = mcap_crores
+
                     if scan_res['signal_strength'] >= min_signal_str:
                         if (not above_50dma_only or scan_res.get('above_50dma', False)) and \
                            (not above_200dma_only or scan_res.get('above_200dma', False)):
@@ -1941,31 +1920,10 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
             # Scan coiled spring VCP setups
             coiled_res = scan_coiled_spring(sym, df, max_tightness=vcp_max_tightness)
             if coiled_res is not None:
-                # Lazy market cap filter for matching VCP contractions
-                formatted_sym = sym.strip().upper()
-                if not formatted_sym.endswith(".NS"):
-                    formatted_sym = f"{formatted_sym}.NS"
-                    
-                if formatted_sym in mcap_cache:
-                    mcap_crores = mcap_cache[formatted_sym]
-                elif universe_key in ["NIFTY 50", "NIFTY 100"]:
-                    mcap_crores = 15000.0
-                    mcap_cache[formatted_sym] = mcap_crores
-                else:
-                    try:
-                        ticker_obj = yf.Ticker(formatted_sym)
-                        mcap = getattr(ticker_obj.fast_info, 'market_cap', None) or 0
-                        if mcap and mcap > 0:
-                            mcap_crores = mcap / 1e7
-                        else:
-                            mcap_crores = 3500.0
-                    except Exception:
-                        mcap_crores = 3500.0
-                    mcap_cache[formatted_sym] = mcap_crores
-                
-                # Hard filter: Market Cap >= 3000 Crore
-                if mcap_crores >= 3000.0:
-                    coiled_res['market_cap_cr'] = mcap_crores
+                # Market Cap filter bypassed
+                mcap_crores = 0.0
+                coiled_res['market_cap_cr'] = mcap_crores
+
                     if coiled_res['squeeze_score'] >= min_signal_str:
                         coiled_list.append(coiled_res)
                         
@@ -4161,25 +4119,9 @@ with tab_monthly_mom:
         mm_price_passed = [s for s in mm_universe if s.strip().upper() in price_map_mm]
         mm_status.text(f"Step 1/3 — {len(mm_price_passed)} stocks pass price ≥ ₹100 filter. Fetching market caps...")
 
-        # ---- Step 2: Fetch market caps in parallel using yf.Ticker.fast_info ----
-        def _fetch_mcap(sym):
-            try:
-                fi = yf.Ticker(f"{sym.strip().upper()}.NS").fast_info
-                # yfinance 1.x: FastInfo is NOT a dict — use attribute access, not .get()
-                mc = getattr(fi, 'market_cap', None) or 0
-                return sym.strip().upper(), mc / CRORE  # INR -> crore
-            except Exception:
-                return sym.strip().upper(), 0.0
-
-        mm_status.text(f"Step 2/3 — Checking market caps for {len(mm_price_passed)} stocks (parallel)...")
-        with _cf.ThreadPoolExecutor(max_workers=10) as pool:
-            for sym_r, mcap_cr in pool.map(_fetch_mcap, mm_price_passed):
-                # Include stock if MCap >= 3000 Cr OR if we couldn't fetch MCap (mcap_cr == 0)
-                if mcap_cr >= 3000.0 or mcap_cr == 0.0:
-                    mcap_map[sym_r] = mcap_cr
-
-        mm_mcap_passed = list(mcap_map.keys())
-        mm_status.text(f"Step 2/3 — {len(mm_mcap_passed)} stocks pass MCap ≥ ₹3000 Cr filter. Downloading monthly data...")
+        mm_mcap_passed = list(mm_price_passed)
+        mcap_map = {sym: 0.0 for sym in mm_mcap_passed}  # Default to 0 since bulk fetch rate-limits
+        mm_status.text(f"Step 2/3 — Market Cap filter bypassed. Downloading monthly data for {len(mm_mcap_passed)} stocks...")
 
         # ---- Step 3: Download monthly OHLCV in bulk and scan ----
         mm_monthly_chunk_size = 50
@@ -4493,25 +4435,10 @@ with tab_weekly_mom:
         wm_price_passed = [s for s in wm_universe if s.strip().upper() in price_map_wm]
         wm_status.text(f"Step 1/3 — {len(wm_price_passed)} stocks pass Price ≥ ₹200. Checking market caps...")
 
-        # ---- Step 2: Market cap ≥ 5000 Cr via parallel fast_info ----
-        mcap_map_wm = {}
-
-        def _fetch_mcap_wm(sym):
-            try:
-                fi = yf.Ticker(f"{sym.strip().upper()}.NS").fast_info
-                mc = getattr(fi, 'market_cap', None) or 0
-                return sym.strip().upper(), mc / CRORE
-            except Exception:
-                return sym.strip().upper(), 0.0
-
-        wm_status.text(f"Step 2/3 — Parallel market cap check for {len(wm_price_passed)} stocks...")
-        with _cf_wm.ThreadPoolExecutor(max_workers=12) as wm_pool:
-            for wsym_r, wmcap_cr in wm_pool.map(_fetch_mcap_wm, wm_price_passed):
-                if wmcap_cr >= 5000.0:
-                    mcap_map_wm[wsym_r] = wmcap_cr
-
-        wm_mcap_passed = list(mcap_map_wm.keys())
-        wm_status.text(f"Step 2/3 — {len(wm_mcap_passed)} stocks pass MCap ≥ ₹5000 Cr. Downloading weekly data...")
+        # ---- Step 2: Market Cap Filter Bypassed ----
+        wm_mcap_passed = list(wm_price_passed)
+        mcap_map_wm = {sym: 0.0 for sym in wm_mcap_passed}
+        wm_status.text(f"Step 2/3 — Market Cap filter bypassed. Downloading weekly data for {len(wm_mcap_passed)} stocks...")
 
         # ---- Step 3: Bulk weekly OHLCV download + scan ----
         wm_monthly_chunk_size = 60
