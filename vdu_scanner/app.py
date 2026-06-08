@@ -1912,10 +1912,10 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 mcap_crores = 0.0
                 scan_res['market_cap_cr'] = mcap_crores
 
-                    if scan_res['signal_strength'] >= min_signal_str:
-                        if (not above_50dma_only or scan_res.get('above_50dma', False)) and \
-                           (not above_200dma_only or scan_res.get('above_200dma', False)):
-                            flagged_list.append(scan_res)
+                if scan_res['signal_strength'] >= min_signal_str:
+                    if (not above_50dma_only or scan_res.get('above_50dma', False)) and \
+                       (not above_200dma_only or scan_res.get('above_200dma', False)):
+                        flagged_list.append(scan_res)
                         
             # Scan coiled spring VCP setups
             coiled_res = scan_coiled_spring(sym, df, max_tightness=vcp_max_tightness)
@@ -1924,8 +1924,8 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 mcap_crores = 0.0
                 coiled_res['market_cap_cr'] = mcap_crores
 
-                    if coiled_res['squeeze_score'] >= min_signal_str:
-                        coiled_list.append(coiled_res)
+                if coiled_res['squeeze_score'] >= min_signal_str:
+                    coiled_list.append(coiled_res)
                         
             # Scan WaveTrend oversold zone with buy signals (Daily is default)
             df_wt = df
