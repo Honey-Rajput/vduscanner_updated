@@ -184,7 +184,7 @@ def scan_stock(
         "recommendation": recommendation
     }
 
-def scan_coiled_spring(symbol: str, df: pd.DataFrame) -> dict | None:
+def scan_coiled_spring(symbol: str, df: pd.DataFrame, max_tightness: float = 7.0) -> dict | None:
     """
     Scans a stock's history to identify if it is in a "Final Contraction" (Coiled Spring / VCP) setup.
     This represents an extremely tight price consolidation with dried volume prior to breakout.
@@ -234,8 +234,8 @@ def scan_coiled_spring(symbol: str, df: pd.DataFrame) -> dict | None:
     min_l_b = segment_b['Low'].min()
     range_b = ((max_h_b - min_l_b) / min_l_b) * 100
     
-    # Check 1: Extreme Price Tightness (Range_5d <= 4.0%)
-    tightness_ok = range_a <= 4.0
+    # Check 1: Extreme Price Tightness (Range_5d <= max_tightness)
+    tightness_ok = range_a <= max_tightness
     # Check 2: Volatility is actively contracting (Range_5d < Range_10d_5d)
     contraction_ok = range_a < range_b
     

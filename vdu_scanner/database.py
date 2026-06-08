@@ -114,6 +114,10 @@ def init_db() -> bool:
             run_up_200 DOUBLE PRECISION,
             run_up_52w DOUBLE PRECISION,
             is_early BOOLEAN,
+            dist_20sma_pct DOUBLE PRECISION,
+            dist_50sma_pct DOUBLE PRECISION,
+            dist_65sma_pct DOUBLE PRECISION,
+            dist_200sma_pct DOUBLE PRECISION,
             UNIQUE(symbol, setup_type, scan_date)
         );
         """,
@@ -274,6 +278,10 @@ def init_db() -> bool:
             "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS run_up_200 DOUBLE PRECISION;",
             "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS run_up_52w DOUBLE PRECISION;",
             "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS is_early BOOLEAN;",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS dist_20sma_pct DOUBLE PRECISION;",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS dist_50sma_pct DOUBLE PRECISION;",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS dist_65sma_pct DOUBLE PRECISION;",
+            "ALTER TABLE scanned_trend_setups ADD COLUMN IF NOT EXISTS dist_200sma_pct DOUBLE PRECISION;",
             "ALTER TABLE scanned_breakouts ADD COLUMN IF NOT EXISTS above_200dma BOOLEAN DEFAULT FALSE;",
             
             "ALTER TABLE scanned_wt_cross ADD COLUMN IF NOT EXISTS buy_price DOUBLE PRECISION;",
@@ -579,7 +587,8 @@ def get_cached_trend_setups(date_str: str, setup_type: str) -> list[dict]:
     query = """
     SELECT symbol, company_name, cmp, day_change_pct, setup_type, scan_date,
            buy_price, exit_price, target_price, confidence, recommendation,
-           run_up_200, run_up_52w, is_early
+           run_up_200, run_up_52w, is_early,
+           dist_20sma_pct, dist_50sma_pct, dist_65sma_pct, dist_200sma_pct
     FROM scanned_trend_setups
     WHERE scan_date = %s AND setup_type = %s;
     """
@@ -917,8 +926,9 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         insert_trend_query = """
         INSERT INTO scanned_trend_setups (symbol, company_name, cmp, day_change_pct, setup_type, scan_date,
                                          buy_price, exit_price, target_price, confidence, recommendation,
-                                         run_up_200, run_up_52w, is_early)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                         run_up_200, run_up_52w, is_early,
+                                         dist_20sma_pct, dist_50sma_pct, dist_65sma_pct, dist_200sma_pct)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in trend_setups:
             cur.execute(insert_trend_query, (
@@ -931,11 +941,15 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 float(r['buy_price']) if r.get('buy_price') is not None else None,
                 float(r['exit_price']) if r.get('exit_price') is not None else None,
                 float(r['target_price']) if r.get('target_price') is not None else None,
-                str(r['confidence']) if r.get('confidence') is not None else None,
+                str(r['confidence']) if r.get('confidence') else None,
                 str(r['recommendation']) if r.get('recommendation') is not None else None,
                 float(r['run_up_200']) if r.get('run_up_200') is not None else None,
                 float(r['run_up_52w']) if r.get('run_up_52w') is not None else None,
-                bool(r['is_early']) if r.get('is_early') is not None else None
+                bool(r['is_early']) if r.get('is_early') is not None else None,
+                float(r['dist_20sma_pct']) if r.get('dist_20sma_pct') is not None else None,
+                float(r['dist_50sma_pct']) if r.get('dist_50sma_pct') is not None else None,
+                float(r['dist_65sma_pct']) if r.get('dist_65sma_pct') is not None else None,
+                float(r['dist_200sma_pct']) if r.get('dist_200sma_pct') is not None else None
             ))
  
         # 3.9. Insert new WT Cross setups
