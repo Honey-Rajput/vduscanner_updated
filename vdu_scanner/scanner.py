@@ -1337,26 +1337,25 @@ def calc_vpa_trends(df: pd.DataFrame) -> dict:
         atr_val = calc_atr(df, ps)
         return (high_shifted - df['Low']) / (atr_val * np.sqrt(ps))
         
+    def get_max_rsh(start_ps, end_ps):
+        res = get_rsh(start_ps)
+        for ps in range(start_ps + 1, end_ps + 1):
+            res = np.maximum(res, get_rsh(ps))
+        return res
+
+    def get_max_rsl(start_ps, end_ps):
+        res = get_rsl(start_ps)
+        for ps in range(start_ps + 1, end_ps + 1):
+            res = np.maximum(res, get_rsl(ps))
+        return res
+        
     # Short term RWI High/Low
-    rshmin = get_rsh(2)
-    rshmax = get_rsh(8)
-    rslmin = get_rsl(2)
-    rslmax = get_rsl(8)
-    
-    RWIHi = np.maximum(rshmin, rshmax)
-    RWILo = np.maximum(rslmin, rslmax)
-    
-    ground = RWIHi
-    sky = RWILo
+    ground = get_max_rsh(2, 8)
+    sky = get_max_rsl(2, 8)
     
     # Long term RWI High/Low
-    rlhmin = get_rsh(10)
-    rlhmax = get_rsh(40)
-    rllmin = get_rsl(10)
-    rllmax = get_rsl(40)
-    
-    RWILHi = np.maximum(rlhmin, rlhmax)
-    RWILLo = np.maximum(rllmin, rllmax)
+    RWILHi = get_max_rsh(10, 40)
+    RWILLo = get_max_rsl(10, 40)
     
     j = RWILHi - RWILLo
     j2 = RWILHi
