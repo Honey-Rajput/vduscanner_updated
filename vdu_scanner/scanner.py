@@ -1324,7 +1324,7 @@ def calc_vpa_trends(df: pd.DataFrame) -> dict:
     Short term: 2, 8
     Long term: 10, 40
     """
-    if df is None or len(df) < 45:
+    if df is None or len(df) < 3:
         return {"major": 0, "mid": 0, "minor": 0}
         
     def get_rsh(ps):
@@ -1338,14 +1338,26 @@ def calc_vpa_trends(df: pd.DataFrame) -> dict:
         return (high_shifted - df['Low']) / (atr_val * np.sqrt(ps))
         
     def get_max_rsh(start_ps, end_ps):
+        if start_ps >= len(df):
+            return pd.Series(0, index=df.index)
+        actual_end_ps = min(end_ps, len(df) - 1)
+        if actual_end_ps < start_ps:
+            return pd.Series(0, index=df.index)
+            
         res = get_rsh(start_ps)
-        for ps in range(start_ps + 1, end_ps + 1):
+        for ps in range(start_ps + 1, actual_end_ps + 1):
             res = np.maximum(res, get_rsh(ps))
         return res
 
     def get_max_rsl(start_ps, end_ps):
+        if start_ps >= len(df):
+            return pd.Series(0, index=df.index)
+        actual_end_ps = min(end_ps, len(df) - 1)
+        if actual_end_ps < start_ps:
+            return pd.Series(0, index=df.index)
+            
         res = get_rsl(start_ps)
-        for ps in range(start_ps + 1, end_ps + 1):
+        for ps in range(start_ps + 1, actual_end_ps + 1):
             res = np.maximum(res, get_rsl(ps))
         return res
         
