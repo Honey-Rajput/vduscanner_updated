@@ -8,8 +8,8 @@ from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 
 from config import IST_TIMEZONE, get_company_name, DRY_ZONE_MIN_DAYS, DRY_ZONE_MAX_DAYS, MIN_VOLUME_RATIO, MIN_PRICE_CHANGE
-from data_fetcher import fetch_ohlcv, get_index_stocks, fetch_ohlcv_timeframe
-from scanner import scan_stock, scan_coiled_spring, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum, scan_vcs, scan_monthly_early_stage2, scan_vpa_trend
+from data_fetcher import fetch_ohlcv, get_index_stocks, fetch_ohlcv_timeframe, get_stock_sector
+from scanner import scan_stock, scan_coiled_spring, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum, scan_vcs, scan_monthly_early_stage2, scan_vpa_trend, scan_structural_vcp
 
 import watchlist
 from utils import inject_premium_css, get_signal_badge_html, get_day_change_badge_html
@@ -521,6 +521,8 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         "7M SMA": lambda x: float(x.get('sma7') or 0.0),
         "Squeeze Score": lambda x: float(x.get('squeeze_score') or 0.0),
         "VCS Score": lambda x: float(x.get('vcs_score') or 0.0),
+        "Contractions": lambda x: int(x.get('contractions') or 0),
+        "VPA Score": lambda x: float(x.get('trend_score') or x.get('score') or 0.0),
         "5d Range": lambda x: float(x.get('range_5d') or 0.0),
         "Pre-Range": lambda x: float(x.get('pre_range') or 0.0),
         "Prev Close": lambda x: float(x.get('prev_close') or 0.0),
@@ -551,8 +553,16 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         default_col = "WT1"
     elif strategy_type == "minervini":
         default_col = "Remaining Target %"
+    elif strategy_type == "vcs":
+        default_col = "VCS Score"
+    elif strategy_type == "struct_vcp":
+        default_col = "Contractions"
+    elif strategy_type == "vpa":
+        default_col = "VPA Score"
+    elif strategy_type == "stage2":
+        default_col = "Score"
     else:
-        default_col = "Symbol"
+        default_col = "Day Chg %"
         
     active_col = st.session_state.get(f"{key_prefix}_sort_col", default_col)
     active_dir = st.session_state.get(f"{key_prefix}_sort_dir", "desc" if active_col != "Symbol" else "asc")
@@ -607,6 +617,11 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         # Clickable TradingView Symbol Link
         cells.append(f'<td style="padding: 10px 12px; font-weight: bold; color: #29b6f6;"><a href="https://in.tradingview.com/chart/?symbol=NSE:{r["symbol"]}" target="_blank" style="color: #29b6f6; text-decoration: none;">{r["symbol"]}</a></td>')
         cells.append(f'<td style="padding: 10px 12px; color: #94a3b8; font-size: 0.82rem;">{r.get("company_name") or get_company_name(r["symbol"])}</td>')
+        
+        # Sector column
+        sector = get_stock_sector(r["symbol"])
+        cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1; font-size: 0.8rem; font-style: italic;">{sector}</td>')
+        
         cells.append(f'<td style="padding: 10px 12px; color: #e2e8f0; font-weight: 500;">₹{buy:,.2f}</td>')
         
         if strategy_type == "vdu_breakout":
@@ -691,6 +706,20 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
             score_val = r.get('vcs_score', 0.0)
             cells.append(f'<td style="padding: 10px 12px; color: #29b6f6; font-weight: 700;">{score_val:.2f}</td>')
             
+        elif strategy_type == "struct_vcp":
+            chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
+            cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
+            cells.append(f'<td style="padding: 10px 12px; color: #00e676; font-weight: 700;">{r.get("contractions", 0)}T</td>')
+            cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1;">{r.get("vol_50d", 0):,.0f}</td>')
+            cells.append(f'<td style="padding: 10px 12px; color: #ffa000;">₹{r.get("pivot_price", 0.0):,.2f}</td>')
+            
+        elif strategy_type == "vpa":
+            chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
+            cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
+            cells.append(f'<td style="padding: 10px 12px; color: #29b6f6; font-weight: 700;">{r.get("trend_score", r.get("score", 0.0)):.1f}</td>')
+            cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1;">{r.get("pattern", "N/A")}</td>')
+            cells.append(f'<td style="padding: 10px 12px; color: #00e676;">{r.get("trend", "N/A")}</td>')
+            
         elif strategy_type == "stage2":
             cells.append(f'<td style="padding: 10px 12px; color: #00e676; font-weight: 600;">₹{r.get("base_bottom", 0.0):,.2f}</td>')
             cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1;">₹{r.get("historical_high", 0.0):,.2f}</td>')
@@ -715,7 +744,7 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
     table_rows = "".join(rows_html)
     
     # Headers based on strategy
-    headers = ["Watchlist", "Symbol", "Company Name", "CMP"]
+    headers = ["Watchlist", "Symbol", "Company Name", "Sector", "CMP"]
     if strategy_type == "vdu_breakout":
         headers.extend(["Day Chg %", "Volume", "Dry Avg Vol", "Vol Ratio", "Dry Days", "Spikes", "Score"])
     elif strategy_type == "coiled_spring":
@@ -730,6 +759,10 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         headers.extend(["Day Chg %", "WT1", "WT2", "WT Diff", "Signal"])
     elif strategy_type == "vcs":
         headers.extend(["Day Chg %", "VCS Score"])
+    elif strategy_type == "struct_vcp":
+        headers.extend(["Day Chg %", "Contractions", "Avg Vol", "Pivot Price"])
+    elif strategy_type == "vpa":
+        headers.extend(["Day Chg %", "VPA Score", "Pattern", "Trend"])
     elif strategy_type == "stage2":
         headers.extend(["Base Bottom", "Historical High", "Extension %", "7M SMA", "RSI", "CCI", "Score"])
         
@@ -872,6 +905,8 @@ if 'minervini_results' not in st.session_state:
     st.session_state.minervini_results = None
 if 'vcs_results' not in st.session_state:
     st.session_state.vcs_results = None
+if 'structural_vcp_results' not in st.session_state:
+    st.session_state.structural_vcp_results = None
 # Initialize global status dictionary if not present (shared across all threads/sessions)
 if "MOMENTUM_SCAN_STATUS" not in globals():
     global MOMENTUM_SCAN_STATUS
@@ -1383,15 +1418,7 @@ min_signal_str = st.sidebar.slider(
     help="Filter stocks based on overall calculated algorithmic rating"
 )
 
-vcp_max_tightness = st.sidebar.slider(
-    "Max VCP Squeeze Tightness (%)",
-    min_value=2.0,
-    max_value=15.0,
-    value=7.0,
-    step=0.5,
-    key="vcp_max_tightness",
-    help="Maximum allowed 5-day trading range (%) to qualify as a Coiled Spring Squeeze."
-)
+vcp_max_tightness = 7.0
 
 above_50dma_only = st.sidebar.checkbox(
     "Above 50 DMA Only",
@@ -1535,6 +1562,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         flagged_list = []
         coiled_list = []
         gapup_list = []
+        structural_vcp_list = []
         above_ma_list = []
         support_ma_list = []
         crossover_ma_list = []
@@ -1940,6 +1968,10 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 if vcs_res is not None:
                     vcs_list.append(vcs_res)
                     
+                struct_vcp_res = scan_structural_vcp(sym, df)
+                if struct_vcp_res is not None:
+                    structural_vcp_list.append(struct_vcp_res)
+                    
                 vpa_res = scan_vpa_trend(sym, df)
                 if vpa_res is not None:
                     vpa_list.append(vpa_res)
@@ -1957,6 +1989,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         st.session_state.crossover_ma_results = crossover_ma_list
         st.session_state.minervini_results = minervini_list
         st.session_state.vcs_results = vcs_list
+        st.session_state.structural_vcp_results = structural_vcp_list
         st.session_state.vpa_results = vpa_list
         st.session_state.wt_results = wt_list
         st.session_state.wt_results_by_tf = {"Daily": wt_list}
@@ -2051,7 +2084,7 @@ with st.sidebar.expander("🎓 Institutional Buy Signals Guide", expanded=False)
 
 # --- MAIN INTERFACE TABS ---
 try:
-    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_monthly_mom, tab_weekly_mom, tab_history, tab_vcs, tab_stage2, tab_vpa = st.tabs([
+    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_monthly_mom, tab_weekly_mom, tab_history, tab_vcs, tab_structural_vcp, tab_stage2, tab_vpa = st.tabs([
         "📊 Scanner Results",
         "📈 Stock Detail",
         "📋 My Watchlist",
@@ -2067,6 +2100,7 @@ try:
         "📈 Weekly Momentum",
         "📅 Scan History",
         "📉 Volatility Contraction (VCS)",
+        "🎯 Structural VCP",
         "🚀 Early Stage 2 Breakout",
         "🚥 VPA Trend"
     ])
@@ -4627,13 +4661,32 @@ with tab_weekly_mom:
 with tab_vcs:
     st.markdown("### 📉 Volatility Contraction Scanner (VCS)")
     st.markdown("Identifies stocks with tightening ATR, Standard Deviation, and Volume contraction.")
+    st.markdown("---")
     
+    # 1. Metrics row
+    v_m1, v_m2, v_m3 = st.columns(3)
+    
+    vcs_data = st.session_state.get('vcs_results', None)
+    if vcs_data:
+        vcs_count = len(vcs_data)
+        min_vcs_score = min(r['vcs_score'] for r in vcs_data) if vcs_count > 0 else 0.0
+        avg_vcs_score = sum(r['vcs_score'] for r in vcs_data) / vcs_count if vcs_count > 0 else 0.0
+    else:
+        vcs_count = 0
+        min_vcs_score = 0.0
+        avg_vcs_score = 0.0
+        
+    v_m1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">VCS Setups Found</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{vcs_count}</h3></div>', unsafe_allow_html=True)
+    v_m2.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Tightest Volatility Score</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{min_vcs_score:.2f}</h3></div>', unsafe_allow_html=True)
+    v_m3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg VCS Rating</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">{avg_vcs_score:.1f} <span style="font-size: 1.1rem; color: #94a3b8;">pts</span></h3></div>', unsafe_allow_html=True)
+    
+    st.markdown("---")
     st.markdown("#### Scanner Parameters")
     col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
     with col1:
         vcs_timeframe = st.selectbox("Timeframe", ["Daily (1d)", "Weekly (1wk)"], index=0)
     with col2:
-        vcs_min_price_chg = st.number_input("Min % Chg", min_value=-50.0, max_value=100.0, value=0.0, step=0.5)
+        vcs_min_price_chg = st.number_input("Min % Chg", min_value=-50.0, max_value=100.0, value=-5.0, step=0.5)
     with col3:
         vcs_len_short = st.number_input("Short ATR Len", min_value=1, max_value=100, value=13)
     with col4:
@@ -4712,7 +4765,8 @@ with tab_vcs:
                 database.save_vcs_only(today_ist_str, custom_vcs_results)
             except Exception as e:
                 print(f"Failed to cache custom VCS scan: {e}")
-            st.success(f"Custom VCS Scan Complete! Found {len(custom_vcs_results)} stocks and saved to database.")
+            if len(custom_vcs_results) > 0:
+                st.success(f"Custom VCS Scan Complete! Found {len(custom_vcs_results)} stocks and saved to database.")
 
     st.markdown("---")
     
@@ -4739,6 +4793,41 @@ with tab_vcs:
                 use_container_width=True
             )
         render_unified_strategy_table(st.session_state.vcs_results, "vcs", "vcs_tab")
+
+# ==============================================================================
+# TAB: STRUCTURAL VCP
+# ==============================================================================
+with tab_structural_vcp:
+    st.markdown("### 🎯 Structural Volatility Contraction Pattern (VCP)")
+    st.markdown("Hunts for textbook VCP patterns: Flat-top resistance, successive higher lows (tightening), and extreme volume dry-up on the right side.")
+    
+    if st.session_state.structural_vcp_results is None:
+        st.info("💡 Run the main scanner from the sidebar to populate Structural VCP setups.")
+    elif len(st.session_state.structural_vcp_results) == 0:
+        st.info("ℹ️ No textbook Structural VCP setups found today.")
+    else:
+        vcp_count = len(st.session_state.structural_vcp_results)
+        st.success(f"Found {vcp_count} Structural VCP setups!")
+        
+        col_btn, _ = st.columns([2, 8])
+        with col_btn:
+            sv_export_list = []
+            for r in st.session_state.structural_vcp_results:
+                row = dict(r)
+                if 'recommendation' in row:
+                    row['Recommendation'] = extract_clean_recommendation(row.pop('recommendation'))
+                sv_export_list.append(row)
+            sv_df = pd.DataFrame(sv_export_list)
+            sv_csv = sv_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ Download CSV",
+                data=sv_csv,
+                file_name="structural_vcp_results.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            
+        render_unified_strategy_table(st.session_state.structural_vcp_results, "struct_vcp", "struct_vcp_tab")
 
 # ==============================================================================
 # TAB: EARLY STAGE 2 BREAKOUT

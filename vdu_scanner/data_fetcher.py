@@ -245,6 +245,49 @@ def fetch_nse_company_names() -> dict:
             print(f"Failed to fetch company names from {url}: {e}")
     return {}
 
+@st.cache_data(ttl=86400 * 7)
+def fetch_sector_map() -> dict:
+    """
+    Downloads Nifty 500 list to map symbols to their industry/sector.
+    Returns a dictionary of {symbol: industry}.
+    """
+    url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    sector_map = {}
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            df = pd.read_csv(io.StringIO(res.text))
+            if 'Symbol' in df.columns and 'Industry' in df.columns:
+                for _, row in df.iterrows():
+                    sym = str(row['Symbol']).strip().upper()
+                    ind = str(row['Industry']).strip()
+                    if sym and ind and ind.lower() != 'nan':
+                        sector_map[sym] = ind
+                return sector_map
+    except Exception as ex:
+        print(f"Failed to fetch sectors: {ex}")
+    return sector_map
+
+@st.cache_data(ttl=86400 * 7)
+def get_stock_sector(symbol: str) -> str:
+    """Returns the sector for a symbol. Tries static map first, then yfinance."""
+    sym = symbol.strip().upper()
+    sector_map = fetch_sector_map()
+    if sym in sector_map:
+        return sector_map[sym]
+    
+    # Fallback to yfinance (can be slow so only fallback)
+    try:
+        yf_sym = f"{sym}.NS" if not sym.endswith(".NS") else sym
+        info = yf.Ticker(yf_sym).info
+        return info.get('sector') or info.get('industry') or 'Unknown'
+    except Exception:
+        return 'Unknown'
+
+
 
 @st.cache_data(ttl=900)
 def fetch_ohlcv_timeframe(symbol: str, interval: str = "1d", period: str = None) -> pd.DataFrame | None:

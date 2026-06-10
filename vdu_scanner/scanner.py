@@ -1110,8 +1110,25 @@ def scan_vcs(symbol: str, df: pd.DataFrame, lenShort=13, lenLong=63, lenVol=50, 
         df_copy["volRatio"] = df_copy["volShort"] / df_copy["volAvg"]
 
         # TREND FILTER (Minervini VCP requires an uptrend)
-        df_copy["sma50"] = df_copy["Close"].rolling(50).mean()
-        df_copy["sma200"] = df_copy["Close"].rolling(200).mean()
+        is_weekly = False
+        try:
+            if isinstance(df_copy.index, pd.DatetimeIndex) and len(df_copy) > 1:
+                avg_days = (df_copy.index[-1] - df_copy.index[0]).days / len(df_copy)
+                if avg_days > 4:
+                    is_weekly = True
+            elif 'Date' in df_copy.columns and pd.api.types.is_datetime64_any_dtype(df_copy['Date']) and len(df_copy) > 1:
+                avg_days = (df_copy['Date'].iloc[-1] - df_copy['Date'].iloc[0]).days / len(df_copy)
+                if avg_days > 4:
+                    is_weekly = True
+        except Exception:
+            pass
+
+        sma_fast_len = 10 if is_weekly else 50
+        sma_slow_len = 40 if is_weekly else 200
+        vol_min = 250000 if is_weekly else 50000
+
+        df_copy["sma50"] = df_copy["Close"].rolling(sma_fast_len).mean()
+        df_copy["sma200"] = df_copy["Close"].rolling(sma_slow_len).mean()
 
         # SCORE CALCULATION
         df_copy["s_atr"] = df_copy["ratioATR"] * sensitivity
@@ -1137,7 +1154,7 @@ def scan_vcs(symbol: str, df: pd.DataFrame, lenShort=13, lenLong=63, lenVol=50, 
         today_vol_avg = df_copy["volAvg"].iloc[-1]
         
         # Ensure stock is in a solid uptrend and has reasonable liquidity
-        if pd.isna(today_sma200) or today_close < today_sma50 or today_close < today_sma200 or today_sma50 < today_sma200 or today_vol_avg < 50000:
+        if pd.isna(today_sma200) or today_close < today_sma50 or today_close < today_sma200 or today_sma50 < today_sma200 or today_vol_avg < vol_min:
             return None
 
         if today_score <= max_score:
@@ -1453,4 +1470,107 @@ def scan_vpa_trend(symbol: str, df: pd.DataFrame) -> dict | None:
         }
     except Exception as e:
         print(f"Error in VPA scan for {symbol}: {e}")
+        return None
+
+def scan_structural_vcp(symbol: str, df: pd.DataFrame, lookback: int = 120, pivot_tolerance: float = 0.05, max_dist_to_pivot: float = 0.10) -> dict | None:
+    """
+    Scans for a structural Volatility Contraction Pattern (VCP).
+    Looks for a flat top resistance (pivot), successive higher lows, and volume dry-up.
+    """
+    if df is None or len(df) < lookback:
+        return None
+        
+    try:
+        from scipy.signal import find_peaks
+        import numpy as np
+        
+        df_recent = df.tail(lookback).copy()
+        
+        # 1. Find Pivot Resistance
+        highs = df_recent['High'].values
+        max_high_idx = np.argmax(highs)
+        
+        if max_high_idx >= len(highs) - 5:
+            return None # Pivot is too recent, this is just a run-up, not a base
+            
+        pivot_price = highs[max_high_idx]
+        
+        # 2. Check current price proximity to pivot
+        cmp = float(df_recent['Close'].iloc[-1])
+        if cmp > pivot_price * 1.05 or cmp < pivot_price * (1 - max_dist_to_pivot):
+            return None # Price must be tight near pivot
+            
+        # 3. Find Contractions (Lows)
+        lows = df_recent['Low'].values
+        inverted_lows = -lows
+        minima_indices, properties = find_peaks(inverted_lows, prominence=pivot_price*0.02, distance=5)
+        
+        valid_minima = [idx for idx in minima_indices if idx > max_high_idx]
+        
+        if len(valid_minima) < 2:
+            return None # We need at least 2 pullbacks after the pivot
+            
+        depths = [(pivot_price - lows[idx])/pivot_price for idx in valid_minima]
+        
+        if depths[-1] > 0.12:
+            return None
+            
+        # 4. Volume Accumulation
+        df_recent['PriceChange'] = df_recent['Close'].diff()
+        up_vol = df_recent[df_recent['PriceChange'] > 0]['Volume'].sum()
+        down_vol = df_recent[df_recent['PriceChange'] < 0]['Volume'].sum()
+        
+        if up_vol <= down_vol:
+            return None # No institutional accumulation
+            
+        # 5. Volume Dry-Up (VDU)
+        if len(df) >= 50:
+            vol_50d_avg = df['Volume'].tail(50).mean()
+        else:
+            vol_50d_avg = df_recent['Volume'].mean()
+            
+        vol_5d_avg = df_recent['Volume'].tail(5).mean()
+        
+        if vol_5d_avg > vol_50d_avg * 0.8:
+            return None # Volume hasn't dried up
+            
+        from config import get_company_name
+        company_name = get_company_name(symbol)
+        
+        score = round((1.0 - (vol_5d_avg / vol_50d_avg)) * 100, 1)
+        
+        buy_price = round(cmp, 2)
+        exit_price = round(cmp * 0.95, 2)
+        target_price = round(pivot_price * 1.15, 2)
+        confidence = "High" if len(valid_minima) >= 3 and depths[-1] < 0.05 else "Medium"
+        
+        base_rec = f"Structural VCP found! Pivot resistance at ₹{pivot_price:.2f}. " \
+                   f"Formed {len(valid_minima)} contractions. " \
+                   f"Volume dried up to {vol_5d_avg/vol_50d_avg*100:.0f}% of 50d avg. " \
+                   f"Buy near ₹{buy_price:.2f}, SL ₹{exit_price:.2f}, Target ₹{target_price:.2f}."
+        
+        recommendation = compute_rich_analysis(df, symbol, "Structural VCP", base_rec)
+            
+        return {
+            "symbol": symbol.strip().upper(),
+            "company_name": company_name,
+            "pivot_price": round(pivot_price, 2),
+            "contractions": len(valid_minima),
+            "depths_pct": [round(d*100, 1) for d in depths],
+            "vol_50d": int(vol_50d_avg),
+            "vol_5d": int(vol_5d_avg),
+            "cmp": buy_price,
+            "buy_price": buy_price,
+            "exit_price": exit_price,
+            "target_price": target_price,
+            "day_change_pct": round(((cmp - df['Close'].iloc[-2])/df['Close'].iloc[-2])*100, 2) if len(df)>=2 else 0.0,
+            "score": score,
+            "confidence": confidence,
+            "recommendation": recommendation
+        }
+    except ImportError:
+        print("scipy is required for structural VCP scan. Please run: pip install scipy")
+        return None
+    except Exception as e:
+        print(f"Error in structural VCP scan for {symbol}: {e}")
         return None
