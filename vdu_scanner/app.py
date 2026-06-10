@@ -506,8 +506,7 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
     # 1. Define safe sorting lambda mapping for all table columns
     sort_mapper = {
         "Symbol": lambda x: (x.get('symbol') or "").upper(),
-        "Company Name": lambda x: (x.get('company_name') or get_company_name(x.get('symbol', '')) or "").upper(),
-        "CMP": lambda x: float(x.get('cmp') or 0.0),
+                "CMP": lambda x: float(x.get('cmp') or 0.0),
         "Day Chg %": lambda x: float(x.get('day_change_pct') or x.get('pct_change_today') or 0.0),
         "Volume": lambda x: float(x.get('today_volume') or x.get('volume') or 0.0),
         "Dry Avg Vol": lambda x: float(x.get('dry_avg_vol') or 0.0),
@@ -616,8 +615,7 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         
         # Clickable TradingView Symbol Link
         cells.append(f'<td style="padding: 10px 12px; font-weight: bold; color: #29b6f6;"><a href="https://in.tradingview.com/chart/?symbol=NSE:{r["symbol"]}" target="_blank" style="color: #29b6f6; text-decoration: none;">{r["symbol"]}</a></td>')
-        cells.append(f'<td style="padding: 10px 12px; color: #94a3b8; font-size: 0.82rem;">{r.get("company_name") or get_company_name(r["symbol"])}</td>')
-        
+                
         # Sector column
         sector = get_stock_sector(r["symbol"])
         cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1; font-size: 0.8rem; font-style: italic;">{sector}</td>')
@@ -744,7 +742,7 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
     table_rows = "".join(rows_html)
     
     # Headers based on strategy
-    headers = ["Watchlist", "Symbol", "Company Name", "Sector", "CMP"]
+    headers = ["Watchlist", "Symbol", "Sector", "CMP"]
     if strategy_type == "vdu_breakout":
         headers.extend(["Day Chg %", "Volume", "Dry Avg Vol", "Vol Ratio", "Dry Days", "Spikes", "Score"])
     elif strategy_type == "coiled_spring":
@@ -2074,8 +2072,8 @@ with tab_scan:
             for r in sorted_scan:
                 export_rows.append({
                     "Symbol": r['symbol'],
-                    "Company Name": r['company_name'],
-                    "CMP (₹)": r['cmp'],
+                "Sector": get_stock_sector(r['symbol']),
+                                        "CMP (₹)": r['cmp'],
                     "Day Change %": r.get('day_change_pct', 0.0),
                     "Today Volume": r.get('today_volume', 0),
                     "Dry Avg Volume": r.get('dry_avg_vol', 0),
@@ -2501,8 +2499,7 @@ with tab_watchlist:
         # Define table configs
         config_table = {
             "symbol": st.column_config.TextColumn("Symbol", disabled=True),
-            "company_name": st.column_config.TextColumn("Company Name", disabled=True),
-            "added_date": st.column_config.TextColumn("Added Date", disabled=True),
+                        "added_date": st.column_config.TextColumn("Added Date", disabled=True),
             "entry_price": st.column_config.NumberColumn("Entry Price (₹)", disabled=True, format="₹%.2f"),
             "signal_strength_at_add": st.column_config.NumberColumn("Original Signal", disabled=True, format="%.1f pts"),
             "CMP (₹)": st.column_config.NumberColumn("Current Price (₹)", disabled=True, format="₹%.2f"),
@@ -3186,8 +3183,8 @@ with tab_gapup:
         for r in sorted_gapup:
             export_gapup.append({
                 "Symbol": r['symbol'],
-                "Company Name": r['company_name'],
-                "Yesterday Close (₹)": r['prev_close'],
+                "Sector": get_stock_sector(r['symbol']),
+                                "Yesterday Close (₹)": r['prev_close'],
                 "Today Open (₹)": r['open_price'],
                 "CMP (₹)": r['cmp'],
                 "Gap %": r['gap_pct'],
@@ -3238,8 +3235,8 @@ with tab_above_ma:
         for r in sorted_above:
             export_above.append({
                 "Symbol": r['symbol'],
-                "Company Name": r['company_name'],
-                "CMP (₹)": r['cmp'],
+                "Sector": get_stock_sector(r['symbol']),
+                                "CMP (₹)": r['cmp'],
                 "Day Change %": r['day_change_pct'],
                 "Setup Type": r['setup_type'],
                 "Dist to 20 SMA (%)": r.get('dist_20sma_pct', 0.0),
@@ -3289,8 +3286,8 @@ with tab_support_ma:
         for r in sorted_support:
             export_support.append({
                 "Symbol": r['symbol'],
-                "Company Name": r['company_name'],
-                "CMP (₹)": r['cmp'],
+                "Sector": get_stock_sector(r['symbol']),
+                                "CMP (₹)": r['cmp'],
                 "Day Change %": r['day_change_pct'],
                 "Setup Type": r['setup_type'],
                 "Dist to 65 SMA (%)": r.get('dist_65sma_pct', 0.0),
@@ -3339,8 +3336,8 @@ with tab_crossover_ma:
         for r in sorted_crossover:
             export_crossover.append({
                 "Symbol": r['symbol'],
-                "Company Name": r['company_name'],
-                "CMP (₹)": r['cmp'],
+                "Sector": get_stock_sector(r['symbol']),
+                                "CMP (₹)": r['cmp'],
                 "Day Change %": r['day_change_pct'],
                 "Setup Type": r['setup_type'],
                 "Suggested Buy (₹)": r['buy_price'],
@@ -3552,8 +3549,8 @@ with tab_wavetrend:
             for r in sorted_wt:
                 export_wt.append({
                     "Symbol": r['symbol'],
-                    "Company Name": r['company_name'],
-                    "CMP (₹)": r['cmp'],
+                "Sector": get_stock_sector(r['symbol']),
+                                        "CMP (₹)": r['cmp'],
                     "Day Change %": r['day_change_pct'],
                     "WT1": r['wt_value'],
                     "WT2": r['wt2_value'],
@@ -3667,8 +3664,8 @@ with tab_minervini:
                     rem_pct = ((r['target_price'] - r['cmp']) / r['cmp'] * 100) if r['cmp'] > 0 else 0.0
                     export_min.append({
                         "Symbol": r['symbol'],
-                        "Company Name": r['company_name'],
-                        "CMP (₹)": r['cmp'],
+                "Sector": get_stock_sector(r['symbol']),
+                                                "CMP (₹)": r['cmp'],
                         "Day Change %": r['day_change_pct'],
                         "Run Up from 200 SMA %": r['run_up_200'],
                         "Run Up from 52w Low %": r['run_up_52w'],
@@ -3746,8 +3743,8 @@ with tab_minervini:
                         rem_pct = ((r['target_price'] - r['cmp']) / r['cmp'] * 100) if r['cmp'] > 0 else 0.0
                         export_min_h.append({
                             "Symbol": r['symbol'],
-                            "Company Name": r['company_name'],
-                            "CMP (₹)": r['cmp'],
+                "Sector": get_stock_sector(r['symbol']),
+                                                        "CMP (₹)": r['cmp'],
                             "Day Change %": r['day_change_pct'],
                             "Run Up from 200 SMA %": r['run_up_200'],
                             "Run Up from 52w Low %": r['run_up_52w'],
@@ -4149,7 +4146,8 @@ with tab_monthly_mom:
 
         # CSV Export
         mm_export = [{
-            "Symbol": r['symbol'], "Company": r['company_name'],
+            "Symbol": r['symbol'],
+                "Sector": get_stock_sector(r['symbol']), "Company": r['company_name'],
             "CMP (₹)": r['cmp'], "MCap (Cr)": r['market_cap_cr'],
             "1M Return (%)": r.get('return_1m', r.get('day_change_pct', 0.0)),
             "EMA8": r['ema8'], "EMA12": r['ema12'], "EMA20": r['ema20'],
@@ -4466,7 +4464,8 @@ with tab_weekly_mom:
 
         # CSV export
         wm_export = [{
-            "Symbol": r['symbol'], "Company": r['company_name'],
+            "Symbol": r['symbol'],
+                "Sector": get_stock_sector(r['symbol']), "Company": r['company_name'],
             "CMP (₹)": r['cmp'], "MCap (Cr)": r['market_cap_cr'],
             "1M Return (%)": r.get('return_1m', 0.0),
             "Prev Close (₹)": r['prev_close'], "Week Open (₹)": r['curr_open'],

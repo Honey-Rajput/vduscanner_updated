@@ -1,3 +1,4 @@
+from data_fetcher import get_stock_sector
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -39,8 +40,8 @@ def render(coiled_data, extract_clean_recommendation, render_unified_strategy_ta
         for r in sorted_coiled:
             export_coiled.append({
                 "Symbol": r['symbol'],
-                "Company Name": r['company_name'],
-                "CMP (₹)": r['cmp'],
+                "Sector": get_stock_sector(r['symbol']),
+                                "CMP (₹)": r['cmp'],
                 "5-Day Range %": r['range_5d'],
                 "Previous Range %": r['range_prev'],
                 "Volume Ratio": r['vol_ratio'],
