@@ -265,9 +265,11 @@ def fetch_sector_map() -> dict:
     # Base from local JSON if generated
     import json
     import os
-    if os.path.exists("sector_map.json"):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    map_path = os.path.join(base_dir, "sector_map.json")
+    if os.path.exists(map_path):
         try:
-            with open("sector_map.json", "r") as f:
+            with open(map_path, "r") as f:
                 sector_map.update(json.load(f))
         except:
             pass
@@ -292,13 +294,17 @@ def fetch_sector_map() -> dict:
 def get_stock_sector(symbol: str) -> str:
     """Returns the sector for a symbol. Tries static map first, then yfinance."""
     sym = symbol.strip().upper()
+    base_sym = sym.replace('.NS', '')
+    
     sector_map = fetch_sector_map()
+    if base_sym in sector_map:
+        return sector_map[base_sym]
     if sym in sector_map:
         return sector_map[sym]
     
     # Fallback to yfinance (can be slow so only fallback)
     try:
-        yf_sym = f"{sym}.NS" if not sym.endswith(".NS") else sym
+        yf_sym = f"{base_sym}.NS"
         info = yf.Ticker(yf_sym).info
         return info.get('sector') or info.get('industry') or 'Unknown'
     except Exception:
