@@ -1476,7 +1476,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
             all_tickers_ns.append(formatted)
             
         today_date_str = datetime.now(IST_TIMEZONE).strftime('%Y-%m-%d')
-        cache_key_p1 = f"p1_quotes_{universe_key}_{today_date_str}"
+        cache_key_p1 = f"p1_quotes_v2_{universe_key}_{today_date_str}"
         
         if cache_key_p1 in st.session_state:
             open_price_map, close_price_map, volume_map, high_price_map, low_price_map = st.session_state[cache_key_p1]
@@ -1585,7 +1585,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         max_dry = dry_zone_range[1]
             
         # Parallel bulk pre-download of historical OHLCV data to boost scan speed by 25x!
-        cache_key_p2 = f"p2_bulk_{universe_key}_{scan_timeframe}_{today_date_str}"
+        cache_key_p2 = f"p2_bulk_v2_{universe_key}_{scan_timeframe}_{today_date_str}"
         bulk_data = {}
         if n_stocks > 0:
             if cache_key_p2 in st.session_state:
@@ -1659,8 +1659,8 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                         bulk_data.update(future.result())
                         prog_bar.progress((i + 1) / len(sym_chunks))
                         status_box.text(f"Phase 2/3: Downloading historical data (Chunk {i+1}/{len(sym_chunks)})...")
-                
-                st.session_state[cache_key_p2] = bulk_data
+                if len(bulk_data) > 0:
+                    st.session_state[cache_key_p2] = bulk_data
         
         mcap_cache = {}
         status_box.text(f"Phase 3/3: Scanning {n_stocks} active NSE listed equities (Price > ₹200)...")
