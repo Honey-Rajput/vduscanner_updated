@@ -1401,6 +1401,9 @@ def calc_vpa_trends(df: pd.DataFrame) -> dict:
     
     # Evaluate Major trend
     major_trend = 1 if latest_j > 1 else (-1 if latest_j < -1 else 0)
+
+    # Evaluate Minor trend
+    minor_trend = 1 if latest_j2 > 1 else (-1 if latest_k2 > 1 else 0)
     
     # Calculate RSI (14)
     close_series = df['Close']
