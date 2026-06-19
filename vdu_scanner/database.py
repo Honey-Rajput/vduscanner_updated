@@ -1124,10 +1124,10 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         # 3.11. Insert new VPA setups
         insert_vpa_query = """
         INSERT INTO scanned_vpa (symbol, company_name, cmp, day_change_pct, volume, vpa_score, 
-                                 daily_major, daily_mid, daily_minor, 
-                                 weekly_major, weekly_mid, weekly_minor, 
-                                 monthly_major, monthly_mid, monthly_minor, scan_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                 daily_major, daily_mid, daily_minor, daily_rsi, daily_cci,
+                                 weekly_major, weekly_mid, weekly_minor, weekly_rsi, weekly_cci,
+                                 monthly_major, monthly_mid, monthly_minor, monthly_rsi, monthly_cci, scan_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in vpa_results:
             cur.execute(insert_vpa_query, (
@@ -1140,12 +1140,18 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 int(r.get('daily', {}).get('major', 0)),
                 int(r.get('daily', {}).get('mid', 0)),
                 int(r.get('daily', {}).get('minor', 0)),
+                float(r.get('daily', {}).get('rsi', 0.0)),
+                float(r.get('daily', {}).get('cci', 0.0)),
                 int(r.get('weekly', {}).get('major', 0)),
                 int(r.get('weekly', {}).get('mid', 0)),
                 int(r.get('weekly', {}).get('minor', 0)),
+                float(r.get('weekly', {}).get('rsi', 0.0)),
+                float(r.get('weekly', {}).get('cci', 0.0)),
                 int(r.get('monthly', {}).get('major', 0)),
                 int(r.get('monthly', {}).get('mid', 0)),
                 int(r.get('monthly', {}).get('minor', 0)),
+                float(r.get('monthly', {}).get('rsi', 0.0)),
+                float(r.get('monthly', {}).get('cci', 0.0)),
                 date_str
             ))
             
@@ -1429,7 +1435,11 @@ def get_frequent_stocks(days_lookback: int = 15) -> list[dict]:
     )
     SELECT a.*, v.daily_rsi as rsi, v.daily_cci as cci
     FROM aggregated a
-    LEFT JOIN scanned_vpa v ON a.symbol = v.symbol AND a.last_seen_date = v.scan_date
+    LEFT JOIN LATERAL (
+        SELECT daily_rsi, daily_cci FROM scanned_vpa
+        WHERE symbol = a.symbol
+        ORDER BY scan_date DESC LIMIT 1
+    ) v ON TRUE
     ORDER BY a.days_appeared DESC, a.total_appearances DESC
     LIMIT 200;
     """

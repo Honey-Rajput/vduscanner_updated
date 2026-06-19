@@ -54,5 +54,15 @@ def render():
         height=600
     )
     
+    # CSV Download
+    csv_data = display_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download Consistent Alerts (CSV)",
+        data=csv_data,
+        file_name="consistent_alerts.csv",
+        mime="text/csv",
+        use_container_width=False
+    )
+    
     st.write("---")
     st.caption(f"Showing {len(df)} stocks that appeared on more than 1 day out of the last {lookback_days} scans.")

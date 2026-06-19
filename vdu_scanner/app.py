@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 from config import IST_TIMEZONE, get_company_name, DRY_ZONE_MIN_DAYS, DRY_ZONE_MAX_DAYS, MIN_VOLUME_RATIO, MIN_PRICE_CHANGE
 from data_fetcher import fetch_ohlcv, get_index_stocks, fetch_ohlcv_timeframe, get_stock_sector
-from scanner import scan_stock, scan_coiled_spring, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum, scan_vcs, scan_monthly_early_stage2, scan_vpa_trend, scan_structural_vcp
+from scanner import scan_stock, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum, scan_vcs, scan_monthly_early_stage2, scan_vpa_trend, scan_structural_vcp
 
 import watchlist
 from utils import inject_premium_css, get_signal_badge_html, get_day_change_badge_html
@@ -544,8 +544,6 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
     # 2. Determine active sort column and direction from session state
     if strategy_type == "vdu_breakout":
         default_col = "Score"
-    elif strategy_type == "coiled_spring":
-        default_col = "Squeeze Score"
     elif strategy_type == "gapup":
         default_col = "Gap %"
     elif strategy_type == "wavetrend":
@@ -593,8 +591,6 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
             score_val = float(r.get('signal_strength', 50.0))
         elif strategy_type == "stage2":
             score_val = float(r.get('score', 50.0))
-        elif strategy_type == "coiled_spring":
-            score_val = float(r.get('squeeze_score', 50.0))
         elif strategy_type == "gapup":
             score_val = float(round(r.get('gap_pct', 0.0) * 10, 1))
         elif strategy_type == "wavetrend":
@@ -635,14 +631,6 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
             cells.append(f'<td style="padding: 10px 12px;">{spikes_badge}</td>')
             score_badge = get_signal_badge_html(r.get("signal_strength", 0.0))
             cells.append(f'<td style="padding: 10px 12px;">{score_badge}</td>')
-            
-        elif strategy_type == "coiled_spring":
-            chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
-            cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
-            cells.append(f'<td style="padding: 10px 12px; color: #00e676; font-weight: 600;">{r.get("range_5d", 0.0):.2f}%</td>')
-            cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1;">{r.get("pre_range", 0.0):.2f}%</td>')
-            cells.append(f'<td style="padding: 10px 12px; color: #ffa000; font-weight: 600;">{r.get("volume_ratio", 0.0):.2f}x</td>')
-            cells.append(f'<td style="padding: 10px 12px; color: #00e676; font-weight: 600;">{r.get("squeeze_score", 0.0):.1f} pts</td>')
             
         elif strategy_type == "gapup":
             cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1;">₹{r.get("prev_close", 0.0):,.2f}</td>')
@@ -746,8 +734,6 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
     headers = ["Watchlist", "Symbol", "Sector", "CMP"]
     if strategy_type == "vdu_breakout":
         headers.extend(["Day Chg %", "Volume", "Dry Avg Vol", "Vol Ratio", "Dry Days", "Spikes", "Score"])
-    elif strategy_type == "coiled_spring":
-        headers.extend(["Day Chg %", "5d Range", "Pre-Range", "Vol Ratio", "Squeeze Score"])
     elif strategy_type == "gapup":
         headers.extend(["Prev Close", "Open", "Gap %", "Day Chg %", "Volume"])
     elif strategy_type in ["above_ma", "support_ma", "crossover_ma"]:
@@ -886,8 +872,6 @@ if 'ai_selected_stock' not in st.session_state:
     st.session_state.ai_selected_stock = ""
 if 'ai_custom_sym_input' not in st.session_state:
     st.session_state.ai_custom_sym_input = ""
-if 'coiled_results' not in st.session_state:
-    st.session_state.coiled_results = None
 if 'gapup_results' not in st.session_state:
     st.session_state.gapup_results = None
 if 'above_ma_results' not in st.session_state:
@@ -1285,10 +1269,6 @@ if st.session_state.scan_results is None and not st.session_state.get('db_cache_
                 except Exception:
                     st.session_state.scan_results = []
                 try:
-                    st.session_state.coiled_results = database.get_cached_squeezes(latest_date_str)
-                except Exception:
-                    st.session_state.coiled_results = []
-                try:
                     st.session_state.gapup_results = database.get_cached_gapups(latest_date_str)
                 except Exception:
                     st.session_state.gapup_results = []
@@ -1330,8 +1310,7 @@ if st.session_state.scan_results is None and not st.session_state.get('db_cache_
                 all_syms = []
                 if st.session_state.scan_results:
                     all_syms.extend([r['symbol'] for r in st.session_state.scan_results])
-                if st.session_state.coiled_results:
-                    all_syms.extend([r['symbol'] for r in st.session_state.coiled_results])
+
                 all_syms = list(set(all_syms))
                 if all_syms:
                     try:
@@ -1569,7 +1548,6 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         n_stocks = len(scan_symbols)
         failed_count = 0
         flagged_list = []
-        coiled_list = []
         gapup_list = []
         structural_vcp_list = []
         above_ma_list = []
@@ -1683,7 +1661,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 "crossover_ma": None,
                 "minervini": None,
                 "flagged": None,
-                "coiled": None,
+
                 "wt": None,
                 "vcs": None,
                 "structural_vcp": None,
@@ -1851,11 +1829,6 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                     if (not above_50dma_only or scan_res.get('above_50dma', False)) and (not above_200dma_only or scan_res.get('above_200dma', False)):
                         res["flagged"] = scan_res
                         
-            coiled_res = scan_coiled_spring(sym, df, max_tightness=vcp_max_tightness)
-            if coiled_res is not None:
-                coiled_res['market_cap_cr'] = 0.0
-                if coiled_res['squeeze_score'] >= min_signal_str:
-                    res["coiled"] = coiled_res
                         
             df_wt = df
             if df_wt is not None and len(df_wt) >= 40:
@@ -1904,7 +1877,6 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                     if res.get("crossover_ma"): crossover_ma_list.append(res["crossover_ma"])
                     if res.get("minervini"): minervini_list.append(res["minervini"])
                     if res.get("flagged"): flagged_list.append(res["flagged"])
-                    if res.get("coiled"): coiled_list.append(res["coiled"])
                     if res.get("wt"): wt_list.append(res["wt"])
                     if res.get("vcs"): vcs_list.append(res["vcs"])
                     if res.get("structural_vcp"): structural_vcp_list.append(res["structural_vcp"])
@@ -1924,7 +1896,6 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         
         # Cache results in state to allow seamless widget interactions
         st.session_state.scan_results = flagged_list
-        st.session_state.coiled_results = coiled_list
         st.session_state.gapup_results = gapup_list
         st.session_state.above_ma_results = above_ma_list
         st.session_state.support_ma_results = support_ma_list
@@ -1946,7 +1917,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
             database.save_scan_results(
                 date_str=today_ist_str,
                 breakouts=flagged_list,
-                squeezes=coiled_list,
+                squeezes=[],
                 gapups=gapup_list,
                 trend_setups=trend_setups_list,
                 wt_cross=wt_list,
@@ -1957,7 +1928,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
             st.toast("💾 Today's scan results cached in Neon PostgreSQL!", icon="✅")
             
             # Trigger background AI scans automatically in the backend!
-            all_flagged_syms = [r['symbol'] for r in flagged_list] + [r['symbol'] for r in coiled_list]
+            all_flagged_syms = [r['symbol'] for r in flagged_list]
             run_background_ai_scan(all_flagged_syms, today_ist_str)
         except Exception as db_err:
             print(f"Failed to cache daily scan results to database: {db_err}")
@@ -2027,12 +1998,11 @@ with st.sidebar.expander("🎓 Institutional Buy Signals Guide", expanded=False)
 
 # --- MAIN INTERFACE TABS ---
 try:
-    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_coiled, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_monthly_mom, tab_weekly_mom, tab_history, tab_vcs, tab_structural_vcp, tab_stage2, tab_vpa, tab_frequent = st.tabs([
+    tab_scan, tab_detail, tab_watchlist, tab_ai, tab_gapup, tab_above_ma, tab_support_ma, tab_crossover_ma, tab_wavetrend, tab_minervini, tab_monthly_mom, tab_weekly_mom, tab_history, tab_vcs, tab_structural_vcp, tab_stage2, tab_vpa, tab_frequent = st.tabs([
         "📊 Scanner Results",
         "📈 Stock Detail",
         "📋 My Watchlist",
         "🤖 AI Chart Pattern Detector",
-        "🌀 Coiled Spring Squeeze",
         "🚀 Gap-Up Setups",
         "📈 Above 20 & 50 SMA",
         "🛡️ 65 SMA Support",
@@ -2909,12 +2879,9 @@ with tab_ai:
             active_flagged_symbols.append(sym)
             symbol_origins[sym] = "📊 Breakout"
             
-    if st.session_state.coiled_results:
-        for r in st.session_state.coiled_results:
             sym = r['symbol'].upper()
             if sym not in symbol_origins:
                 active_flagged_symbols.append(sym)
-                symbol_origins[sym] = "🌀 VCP Coiled"
                 
     active_flagged_symbols = list(set(active_flagged_symbols))
     active_flagged_symbols.sort()
@@ -3164,17 +3131,6 @@ with tab_ai:
                 
             st.markdown("<hr style='margin: 4px 0; border-color: rgba(255,255,255,0.03);'>", unsafe_allow_html=True)
 
-# ==============================================================================
-# TAB 5: COILED SPRING SQUEEZE
-# ==============================================================================
-with tab_coiled:
-    import tabs.tab_coiled as tab_coiled_module
-    tab_coiled_module.render(
-        st.session_state.coiled_results,
-        extract_clean_recommendation,
-        render_unified_strategy_table,
-        IST_TIMEZONE
-    )
 
 # ==============================================================================
 # TAB 6: GAP-UP SETUPS
@@ -3433,8 +3389,6 @@ with tab_wavetrend:
         symbols_to_scan = []
         if st.session_state.scan_results:
             symbols_to_scan.extend([r['symbol'] for r in st.session_state.scan_results])
-        if st.session_state.coiled_results:
-            symbols_to_scan.extend([r['symbol'] for r in st.session_state.coiled_results])
         if st.session_state.above_ma_results:
             symbols_to_scan.extend([r['symbol'] for r in st.session_state.above_ma_results])
             
@@ -3863,8 +3817,7 @@ with tab_history:
                     <span style="font-size: 0.82rem; color: #94a3b8; font-weight:600; text-transform: uppercase;">Session Log Summary</span>
                     <p style="margin: 4px 0 0 0; font-size: 0.95rem; color: #e2e8f0;">
                         <b>Total Scanned:</b> {day_log.get('total_scanned', 'N/A')} stocks | 
-                        <b>VDU Breakouts:</b> <span style="color:#00e676; font-weight:600;">{day_log.get('breakouts_found', 0)}</span> | 
-                        <b>VCP Squeezes:</b> <span style="color:#ab47bc; font-weight:600;">{day_log.get('squeezes_found', 0)}</span>
+                        <b>VDU Breakouts:</b> <span style="color:#00e676; font-weight:600;">{day_log.get('breakouts_found', 0)}</span>
                     </p>
                 </div>
                 """,
@@ -3874,9 +3827,8 @@ with tab_history:
         st.markdown("<br>", unsafe_allow_html=True)
         
         # Nested sub-tabs inside History tab
-        sub_breakout, sub_squeeze, sub_gapup, sub_above_ma, sub_support_ma, sub_crossover_ma, sub_wt = st.tabs([
+        sub_breakout, sub_gapup, sub_above_ma, sub_support_ma, sub_crossover_ma, sub_wt = st.tabs([
             "📊 VDU Breakouts",
-            "🌀 VCP Squeezes",
             "🚀 Gap-Ups",
             "📈 Above 20 & 50 SMA",
             "🛡️ 65 SMA Support",
@@ -3894,17 +3846,8 @@ with tab_history:
                 st.markdown(f"**📊 VDU Breakouts on {selected_date_str} ({len(sorted_hb)})**")
                 render_unified_strategy_table(sorted_hb, "vdu_breakout", f"hist_bo_{selected_date_str}")
                     
-        # 2. Historical VCP Squeezes
-        with sub_squeeze:
-            h_squeezes = database.get_cached_squeezes(selected_date_str)
-            if not h_squeezes:
-                st.info(f"ℹ️ No VCP Squeezes were recorded on {selected_date_str}.")
-            else:
-                sorted_hq = sorted(h_squeezes, key=lambda x: x.get('squeeze_score', 0.0), reverse=True)
-                st.markdown(f"**🌀 Coiled VCP Squeezes on {selected_date_str} ({len(sorted_hq)})**")
-                render_unified_strategy_table(sorted_hq, "coiled_spring", f"hist_sq_{selected_date_str}")
                     
-        # 3. Historical Gap-Ups
+        # 2. Historical Gap-Ups
         with sub_gapup:
             h_gapups = database.get_cached_gapups(selected_date_str)
             if not h_gapups:
