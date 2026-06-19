@@ -4769,8 +4769,8 @@ with tab_stage2:
             s2_prog = st.progress(0)
             s2_status = st.empty()
             
-            for c_idx, chunk in enumerate(chunks):
-                s2_status.text(f"Scanning chunk {c_idx + 1} of {len(chunks)}... ({len(s2_res)} found so far)")
+            def download_s2_chunk(c_idx, chunk):
+                chunk_res = []
                 tkrs = [f"{s}.NS" for s in chunk]
                 try:
                     df_s2 = yf.download(tickers=tkrs, period="5y", interval="1mo", progress=False, threads=False)
@@ -4790,15 +4790,23 @@ with tab_stage2:
                                     t_df.rename(columns={t_df.columns[0]: 'Date'}, inplace=True)
                                     res = scan_monthly_early_stage2(sym, t_df, max_run_up_pct=s2_max_runup)
                                     if res:
-                                        s2_res.append(res)
+                                        chunk_res.append(res)
                             except Exception as parse_ex:
                                 pass
                 except Exception as down_ex:
-                    st.warning(f"Failed to download chunk {c_idx + 1}: {down_ex}")
-                    pass
+                    print(f"Failed to download chunk {c_idx + 1}: {down_ex}")
+                return chunk_res
+
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures = []
+                for c_idx, chunk in enumerate(chunks):
+                    futures.append(executor.submit(download_s2_chunk, c_idx, chunk))
                 
-                # Update progress bar
-                s2_prog.progress((c_idx + 1) / len(chunks))
+                for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                    s2_status.text(f"Scanning chunks... ({i+1}/{len(chunks)})")
+                    s2_res.extend(future.result())
+                    s2_prog.progress((i + 1) / len(chunks))
             
             s2_prog.empty()
             s2_status.empty()
@@ -4877,10 +4885,9 @@ with tab_vpa:
                 price_filtered = []
                 
                 # We need at least ~100 days of history for VPA to calculate daily/weekly accurately
-                for chunk_idx, chunk in enumerate(sym_chunks):
-                    prog.progress((chunk_idx) / len(sym_chunks))
-                    status.text(f"Fetching bulk history chunk {chunk_idx+1}/{len(sym_chunks)}...")
-                    
+                def download_vpa_chunk(chunk_idx, chunk):
+                    chunk_data = {}
+                    chunk_filtered = []
                     try:
                         df_bulk = yf.download(tickers=chunk, period="5y", interval="1d", progress=False, threads=True)
                         if isinstance(df_bulk.columns, pd.MultiIndex):
@@ -4893,8 +4900,8 @@ with tab_vpa:
                                             ticker_df = ticker_df.reset_index()
                                             ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
                                             ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
-                                            valid_data[sym] = ticker_df
-                                            price_filtered.append(sym)
+                                            chunk_data[sym] = ticker_df
+                                            chunk_filtered.append(sym)
                                 except Exception:
                                     pass
                         else:
@@ -4904,10 +4911,24 @@ with tab_vpa:
                                     ticker_df = ticker_df.reset_index()
                                     ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
                                     ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
-                                    valid_data[chunk[0]] = ticker_df
-                                    price_filtered.append(chunk[0])
+                                    chunk_data[chunk[0]] = ticker_df
+                                    chunk_filtered.append(chunk[0])
                     except Exception:
                         pass
+                    return chunk_data, chunk_filtered
+                    
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = []
+                    for chunk_idx, chunk in enumerate(sym_chunks):
+                        futures.append(executor.submit(download_vpa_chunk, chunk_idx, chunk))
+                    
+                    for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                        res_data, res_filtered = future.result()
+                        valid_data.update(res_data)
+                        price_filtered.extend(res_filtered)
+                        prog.progress((i + 1) / len(sym_chunks))
+                        status.text(f"Fetching bulk history chunks... ({i+1}/{len(sym_chunks)})")
                 
                 # Phase 2: Final VPA Compute (Instant)
                 st.info("Phase 2: Calculating VPA Trends (Instant)...")
