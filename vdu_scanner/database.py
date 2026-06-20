@@ -365,7 +365,18 @@ def init_db() -> bool:
             "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS weekly_rsi DOUBLE PRECISION;",
             "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS weekly_cci DOUBLE PRECISION;",
             "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS monthly_rsi DOUBLE PRECISION;",
-            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS monthly_cci DOUBLE PRECISION;"
+            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS monthly_cci DOUBLE PRECISION;",
+            
+            # Volume Profile level columns (POC, VAL, VAH per timeframe)
+            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS daily_poc DOUBLE PRECISION;",
+            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS daily_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS daily_vah DOUBLE PRECISION;",
+            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS weekly_poc DOUBLE PRECISION;",
+            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS weekly_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS weekly_vah DOUBLE PRECISION;",
+            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS monthly_poc DOUBLE PRECISION;",
+            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS monthly_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS monthly_vah DOUBLE PRECISION;"
         ]
         for m in migrations:
             try:
@@ -938,7 +949,7 @@ def get_cached_stage2(date_str: str) -> list[dict]:
     return results
 
 def save_volume_profile_only(date_str: str, vp_results: list[dict]) -> bool:
-    """Saves only the Volume Profile results. Accepts raw scanner output format."""
+    """Saves Volume Profile results including POC/VAL/VAH levels."""
     if not vp_results:
         return True
         
@@ -949,72 +960,63 @@ def save_volume_profile_only(date_str: str, vp_results: list[dict]) -> bool:
         
         insert_vp_query = """
         INSERT INTO scanned_volume_profile 
-        (symbol, company_name, cmp, market_cap_cr, daily_zone, daily_pos, weekly_zone, weekly_pos, monthly_zone, monthly_pos, scan_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        (symbol, company_name, cmp, market_cap_cr, 
+         daily_zone, daily_pos, daily_poc, daily_val, daily_vah,
+         weekly_zone, weekly_pos, weekly_poc, weekly_val, weekly_vah,
+         monthly_zone, monthly_pos, monthly_poc, monthly_val, monthly_vah,
+         scan_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (symbol, scan_date) DO UPDATE SET
-            company_name = EXCLUDED.company_name,
             cmp = EXCLUDED.cmp,
             market_cap_cr = EXCLUDED.market_cap_cr,
-            daily_zone = EXCLUDED.daily_zone,
-            daily_pos = EXCLUDED.daily_pos,
-            weekly_zone = EXCLUDED.weekly_zone,
-            weekly_pos = EXCLUDED.weekly_pos,
-            monthly_zone = EXCLUDED.monthly_zone,
-            monthly_pos = EXCLUDED.monthly_pos;
+            daily_zone = EXCLUDED.daily_zone, daily_pos = EXCLUDED.daily_pos,
+            daily_poc = EXCLUDED.daily_poc, daily_val = EXCLUDED.daily_val, daily_vah = EXCLUDED.daily_vah,
+            weekly_zone = EXCLUDED.weekly_zone, weekly_pos = EXCLUDED.weekly_pos,
+            weekly_poc = EXCLUDED.weekly_poc, weekly_val = EXCLUDED.weekly_val, weekly_vah = EXCLUDED.weekly_vah,
+            monthly_zone = EXCLUDED.monthly_zone, monthly_pos = EXCLUDED.monthly_pos,
+            monthly_poc = EXCLUDED.monthly_poc, monthly_val = EXCLUDED.monthly_val, monthly_vah = EXCLUDED.monthly_vah;
         """
+        
+        def _extract_tf(v, tf_key):
+            """Extract zone, pos, poc, val, vah from a timeframe dict."""
+            tf = v.get(tf_key)
+            if isinstance(tf, dict) and tf:
+                return (
+                    tf.get('zone', ''),
+                    tf.get('position_pct', None),
+                    tf.get('poc', None),
+                    tf.get('val', None),
+                    tf.get('vah', None)
+                )
+            return ('', None, None, None, None)
+        
         vp_data = []
         for v in vp_results:
-            # Handle both raw scanner output and formatted export keys
             sym = v.get('symbol', v.get('Symbol', ''))
             cmp = v.get('cmp', v.get('CMP', 0))
             mcap = v.get('market_cap_cr', v.get('Market Cap (Cr)', 0))
-            
-            # Extract zone/pos from nested dicts (raw) or flat keys (formatted)
-            d = v.get('daily')
-            w = v.get('weekly')
-            m = v.get('monthly')
-            
-            if isinstance(d, dict):
-                daily_zone = d.get('zone', '') if d else ''
-                daily_pos = d.get('position_pct', None) if d else None
-            else:
-                daily_zone = v.get('Daily Zone', '')
-                daily_pos = v.get('Daily Pos', None)
-                if daily_pos == '':
-                    daily_pos = None
-                    
-            if isinstance(w, dict):
-                weekly_zone = w.get('zone', '') if w else ''
-                weekly_pos = w.get('position_pct', None) if w else None
-            else:
-                weekly_zone = v.get('Weekly Zone', '')
-                weekly_pos = v.get('Weekly Pos', None)
-                if weekly_pos == '':
-                    weekly_pos = None
-                    
-            if isinstance(m, dict):
-                monthly_zone = m.get('zone', '') if m else ''
-                monthly_pos = m.get('position_pct', None) if m else None
-            else:
-                monthly_zone = v.get('Monthly Zone', '')
-                monthly_pos = v.get('Monthly Pos', None)
-                if monthly_pos == '':
-                    monthly_pos = None
-            
-            # Clean symbol (remove .NS suffix for storage)
             clean_sym = str(sym).replace('.NS', '').strip().upper()
             
+            d_zone, d_pos, d_poc, d_val, d_vah = _extract_tf(v, 'daily')
+            w_zone, w_pos, w_poc, w_val, w_vah = _extract_tf(v, 'weekly')
+            m_zone, m_pos, m_poc, m_val, m_vah = _extract_tf(v, 'monthly')
+            
             vp_data.append((
-                clean_sym,
-                '',  # company_name not available from scanner
+                clean_sym, '',
                 float(cmp) if cmp else 0,
                 float(mcap) if mcap else 0,
-                daily_zone,
-                float(daily_pos) if daily_pos is not None else None,
-                weekly_zone,
-                float(weekly_pos) if weekly_pos is not None else None,
-                monthly_zone,
-                float(monthly_pos) if monthly_pos is not None else None,
+                d_zone, float(d_pos) if d_pos is not None else None,
+                float(d_poc) if d_poc is not None else None,
+                float(d_val) if d_val is not None else None,
+                float(d_vah) if d_vah is not None else None,
+                w_zone, float(w_pos) if w_pos is not None else None,
+                float(w_poc) if w_poc is not None else None,
+                float(w_val) if w_val is not None else None,
+                float(w_vah) if w_vah is not None else None,
+                m_zone, float(m_pos) if m_pos is not None else None,
+                float(m_poc) if m_poc is not None else None,
+                float(m_val) if m_val is not None else None,
+                float(m_vah) if m_vah is not None else None,
                 date_str
             ))
             
@@ -1047,22 +1049,34 @@ def get_cached_volume_profile(date_str: str) -> list[dict]:
         rows = cur.fetchall()
         results = []
         for row in rows:
+            def _safe_float(val):
+                return float(val) if val is not None else None
+            
             results.append({
                 'symbol': row['symbol'],
                 'company_name': row['company_name'],
                 'cmp': row['cmp'],
                 'market_cap_cr': row['market_cap_cr'],
                 'daily': {
-                    'zone': row['daily_zone'],
-                    'position_pct': row['daily_pos'] if row['daily_pos'] is not None else ""
+                    'zone': row['daily_zone'] or '',
+                    'position_pct': row['daily_pos'] if row['daily_pos'] is not None else "",
+                    'poc': _safe_float(row.get('daily_poc')),
+                    'val': _safe_float(row.get('daily_val')),
+                    'vah': _safe_float(row.get('daily_vah'))
                 },
                 'weekly': {
-                    'zone': row['weekly_zone'],
-                    'position_pct': row['weekly_pos'] if row['weekly_pos'] is not None else ""
+                    'zone': row['weekly_zone'] or '',
+                    'position_pct': row['weekly_pos'] if row['weekly_pos'] is not None else "",
+                    'poc': _safe_float(row.get('weekly_poc')),
+                    'val': _safe_float(row.get('weekly_val')),
+                    'vah': _safe_float(row.get('weekly_vah'))
                 },
                 'monthly': {
-                    'zone': row['monthly_zone'],
-                    'position_pct': row['monthly_pos'] if row['monthly_pos'] is not None else ""
+                    'zone': row['monthly_zone'] or '',
+                    'position_pct': row['monthly_pos'] if row['monthly_pos'] is not None else "",
+                    'poc': _safe_float(row.get('monthly_poc')),
+                    'val': _safe_float(row.get('monthly_val')),
+                    'vah': _safe_float(row.get('monthly_vah'))
                 }
             })
         return results

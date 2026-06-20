@@ -2032,50 +2032,26 @@ with st.sidebar.expander("🎓 Institutional Buy Signals Guide", expanded=False)
         unsafe_allow_html=True
     )
 
-# --- MAIN INTERFACE TABS (Top Navigation) ---
-nav_modules = [
-    "📊 Scanner Results",
-    "📈 Stock Detail",
-    "📋 My Watchlist",
-    "🤖 AI Chart Pattern Detector",
-    "🚀 Gap-Up Setups",
-    "📈 Above 20 & 50 SMA",
-    "🛡️ 65 SMA Support",
-    "🔄 MA Crossovers",
-    "🌊 Wave Trend",
-    "🏆 Minervini Stage-2",
-    "📅 Monthly Momentum",
-    "📈 Weekly Momentum",
-    "📅 Scan History",
-    "📉 Volatility Contraction (VCS)",
-    "🎯 Structural VCP",
-    "🚀 Early Stage 2 Breakout",
-    "🚥 VPA Trend",
-    "🔄 Consistent Alerts",
-    "📊 Volume Profile"
-]
-
+# --- MAIN INTERFACE TABS ---
 st.markdown("---")
-nav_col1, nav_col2 = st.columns([1, 4])
-with nav_col1:
-    st.markdown("### 🧭 Navigate")
-with nav_col2:
-    selected_module = st.selectbox(
-        "Select Scan Module",
-        nav_modules,
-        index=0,
-        label_visibility="collapsed"
-    )
 
-
-
-# Get scan cache
+# Get scan cache (used by multiple tabs)
 scan_data = st.session_state.scan_results
+
+(tab_results, tab_detail, tab_watchlist, tab_ai, tab_gapup, tab_sma, tab_sma65,
+ tab_macross, tab_wave, tab_minervini, tab_monthly, tab_weekly, tab_history,
+ tab_vcs, tab_vcp, tab_stage2, tab_vpa, tab_alerts, tab_volprofile) = st.tabs([
+    "📊 Results", "📈 Detail", "📋 Watchlist", "🤖 AI Pattern",
+    "🚀 Gap-Up", "📈 20&50 SMA", "🛡️ 65 SMA", "🔄 MA Cross",
+    "🌊 Wave", "🏆 Minervini", "📅 Monthly", "📈 Weekly",
+    "📅 History", "📉 VCS", "🎯 VCP", "🚀 Stage2 Brk",
+    "🚥 VPA", "🔄 Alerts", "📊 Vol Profile"
+])
 
 # ==============================================================================
 # TAB 1: SCANNER RESULTS
 # ==============================================================================
-if selected_module == "📊 Scanner Results":
+with tab_results:
     try:
         # 1. Premium Metrics Row
         m1, m2, m3, m4 = st.columns(4)
@@ -2157,7 +2133,7 @@ if selected_module == "📊 Scanner Results":
 # ==============================================================================
 # TAB 2: STOCK DETAIL
 # ==============================================================================
-if selected_module == "📈 Stock Detail":
+with tab_detail:
     # Mode selector for analysis target
     search_mode = st.radio(
         "Choose Analysis Target Mode:",
@@ -2471,7 +2447,7 @@ if selected_module == "📈 Stock Detail":
 # ==============================================================================
 # TAB 3: WATCHLIST
 # ==============================================================================
-if selected_module == "📋 My Watchlist":
+with tab_watchlist:
     st.markdown("### 📋 My Watchlist Monitor")
     
     # Read persistent DB
@@ -2663,7 +2639,7 @@ if selected_module == "📋 My Watchlist":
 # ==============================================================================
 # TAB 4: AI CHART PATTERN DETECTOR
 # ==============================================================================
-if selected_module == "🤖 AI Chart Pattern Detector":
+with tab_ai:
     st.markdown("### 🤖 Technical Chart Pattern Recognition with AI")
     st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Inspect daily candle charts with Euri / Groq AI technical analysts and save/cache findings in Neon PostgreSQL database.</p>", unsafe_allow_html=True)
     st.info("💡 **Trading Note on Live Data**: Scans performed during active NSE market hours (9:15 AM - 3:30 PM IST) dynamically process real-time updates for today's active candle. Indicators (RSI, CCI) and scanner scores will naturally vary as today's close prices fluctuate. Scans run after market hours are 100% static and deterministic.")
@@ -3176,7 +3152,7 @@ if selected_module == "🤖 AI Chart Pattern Detector":
 # ==============================================================================
 # TAB 6: GAP-UP SETUPS
 # ==============================================================================
-if selected_module == "🚀 Gap-Up Setups":
+with tab_gapup:
     st.markdown("### 🚀 Daily Gap-Up Momentum Setups")
     st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Scan for momentum setups opening higher than yesterday's close — price breaking out of overhead levels immediately upon market open.</p>", unsafe_allow_html=True)
     st.markdown("---")
@@ -3247,7 +3223,7 @@ if selected_module == "🚀 Gap-Up Setups":
 # ==============================================================================
 # TAB 7: ABOVE 20 & 50 SMA
 # ==============================================================================
-if selected_module == "📈 Above 20 & 50 SMA":
+with tab_sma:
     st.markdown("### 📈 Stocks Trading Above 20 SMA & 50 SMA")
     st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Identify stocks in a strong medium-term uptrend where price is trading comfortably above both their 20-day and 50-day Simple Moving Averages.</p>", unsafe_allow_html=True)
     st.markdown("---")
@@ -3298,7 +3274,7 @@ if selected_module == "📈 Above 20 & 50 SMA":
 # ==============================================================================
 # TAB 8: 65 SMA SUPPORT
 # ==============================================================================
-if selected_module == "🛡️ 65 SMA Support":
+with tab_sma65:
     st.markdown("### 🛡️ Stocks Taking Support at 65 SMA")
     st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Scan for institutional pullbacks where the price is testing or bouncing precisely off the 65-day Simple Moving Average (65 SMA), offering high-probability low-risk entries.</p>", unsafe_allow_html=True)
     st.markdown("---")
@@ -3348,7 +3324,7 @@ if selected_module == "🛡️ 65 SMA Support":
 # ==============================================================================
 # TAB 9: MA CROSSOVERS
 # ==============================================================================
-if selected_module == "🔄 MA Crossovers":
+with tab_macross:
     st.markdown("### 🔄 Moving Average Crossover Signals")
     st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Identify stocks triggering critical trend reversal crossovers (50 SMA crossing 150/200 SMA, or price crossing above 50/150/200 SMA) in the latest session.</p>", unsafe_allow_html=True)
     st.markdown("---")
@@ -3397,7 +3373,7 @@ if selected_module == "🔄 MA Crossovers":
 # ==============================================================================
 # TAB 10: WAVE TREND (LazyBear)
 # ==============================================================================
-if selected_module == "🌊 Wave Trend":
+with tab_wave:
     # 0. Timeframe & Threshold selector inside tab
     wt_col1, wt_col2 = st.columns(2)
     with wt_col1:
@@ -3643,7 +3619,7 @@ if selected_module == "🌊 Wave Trend":
 # ==============================================================================
 # TAB 11: MARK MINERVINI STAGE-2 TREND TEMPLATE
 # ==============================================================================
-if selected_module == "🏆 Minervini Stage-2":
+with tab_minervini:
     st.markdown("### 🏆 Mark Minervini Stage-2 Trend Template")
     st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Scan for institutional Stage-2 uptrend breakout setups using the legendary Mark Minervini Trend Template. We prioritize <b style=\"color:#00e676;\">Early Stage-2</b> candidates (within 20% of their 200 SMA support) to capture high-velocity breakouts with tight risk protection.</p>", unsafe_allow_html=True)
     st.markdown("---")
@@ -3837,7 +3813,7 @@ if selected_module == "🏆 Minervini Stage-2":
 # ==============================================================================
 # TAB 12: SCAN HISTORY VIEWER
 # ==============================================================================
-if selected_module == "📅 Scan History":
+with tab_history:
     st.markdown("### 📅 Historical Scan Database")
     st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Browse the archive of all historical stock scans saved in Neon PostgreSQL. Retrieve and analyze past breakouts, pullbacks, and mean-reversion trade setups.</p>", unsafe_allow_html=True)
     st.markdown("---")
@@ -3952,7 +3928,7 @@ if selected_module == "📅 Scan History":
 # ==============================================================================
 # TAB: MONTHLY MOMENTUM SCANNER (EMA Stack + ROC + RSI + Volume > Vol SMA)
 # ==============================================================================
-if selected_module == "📅 Monthly Momentum":
+with tab_monthly:
     st.markdown("### 📅 Monthly Momentum Scanner")
     st.markdown(
         "<p style='font-size:0.9rem; color:#94a3b8;'>Scans <b>all NSE-listed stocks</b> (Market Cap ≥ ₹3000 Cr, Price ≥ ₹100) for "
@@ -4271,7 +4247,7 @@ if selected_module == "📅 Monthly Momentum":
 # ==============================================================================
 # TAB: WEEKLY MOMENTUM SCANNER
 # ==============================================================================
-if selected_module == "📈 Weekly Momentum":
+with tab_weekly:
     st.markdown("### 📈 Weekly Momentum Breakout Scanner")
     st.markdown(
         "<p style='font-size:0.9rem; color:#94a3b8;'>Scans <b>all NSE-listed stocks</b> (MCap ≥ ₹5000 Cr, Price ≥ ₹200) for the "
@@ -4600,7 +4576,7 @@ if selected_module == "📈 Weekly Momentum":
 # ==============================================================================
 # TAB VCS: VOLATILITY CONTRACTION SCANNER
 # ==============================================================================
-if selected_module == "📉 Volatility Contraction (VCS)":
+with tab_vcs:
     st.markdown("### 📉 Volatility Contraction Scanner (VCS)")
     st.markdown("Identifies stocks with tightening ATR, Standard Deviation, and Volume contraction.")
     st.markdown("---")
@@ -4739,7 +4715,7 @@ if selected_module == "📉 Volatility Contraction (VCS)":
 # ==============================================================================
 # TAB: STRUCTURAL VCP
 # ==============================================================================
-if selected_module == "🎯 Structural VCP":
+with tab_vcp:
     st.markdown("### 🎯 Structural Volatility Contraction Pattern (VCP)")
     st.markdown("Hunts for textbook VCP patterns: Flat-top resistance, successive higher lows (tightening), and extreme volume dry-up on the right side.")
     
@@ -4774,7 +4750,7 @@ if selected_module == "🎯 Structural VCP":
 # ==============================================================================
 # TAB: EARLY STAGE 2 BREAKOUT
 # ==============================================================================
-if selected_module == "🚀 Early Stage 2 Breakout":
+with tab_stage2:
     st.markdown("### 🚀 Early Stage 2 Base Breakout Scanner")
     st.markdown("Identifies stocks moving out of a long-term Stage 1 base on the monthly timeframe.")
     
@@ -4904,7 +4880,7 @@ if selected_module == "🚀 Early Stage 2 Breakout":
 # ==============================================================================
 # TAB 17: VPA TREND
 # ==============================================================================
-if selected_module == "🚥 VPA Trend":
+with tab_vpa:
     st.markdown("### 🚥 VPA Trend Indicator (Daily, Weekly, Monthly)")
     st.info("Scans ALL NSE listed stocks. Filters: Price > ₹100. Shows Major, Mid, and Minor trends across timeframes.")
     
@@ -5221,13 +5197,13 @@ if selected_module == "🚥 VPA Trend":
         st.markdown(table_html, unsafe_allow_html=True)
 
 # TAB: FREQUENT FLYERS (CONSISTENT ALERTS)
-if selected_module == "🔄 Consistent Alerts":
+with tab_alerts:
     import tabs.tab_frequent as tab_freq_mod
     tab_freq_mod.render()
 
 
 # --- VOLUME PROFILE SCANNER TAB ---
-if selected_module == "📊 Volume Profile":
+with tab_volprofile:
     st.markdown("### 📊 Volume Profile Zones (Daily, Weekly, Monthly)")
     st.info("Scans ALL NSE listed stocks for POC, VAH, VAL levels. Filters: Price > ₹100, Market Cap > 2000 Cr.")
     
@@ -5361,37 +5337,28 @@ if selected_module == "📊 Volume Profile":
     else:
         vp_data = st.session_state.vp_results
         
+        # Helper to safely extract VP level data from a timeframe dict
+        def _get_tf(r, tf_key):
+            tf = r.get(tf_key)
+            if isinstance(tf, dict) and tf:
+                return {
+                    'zone': tf.get('zone', ''),
+                    'va_pct': tf.get('position_pct', ''),
+                    'poc': round(tf['poc'], 2) if tf.get('poc') is not None else '',
+                    'val': round(tf['val'], 2) if tf.get('val') is not None else '',
+                    'vah': round(tf['vah'], 2) if tf.get('vah') is not None else ''
+                }
+            return {'zone': '', 'va_pct': '', 'poc': '', 'val': '', 'vah': ''}
+        
         # Format for Dataframe
         import pandas as pd
         vp_export = []
         rank = 1
         
         for r in vp_data:
-            d = r.get('daily')
-            w = r.get('weekly')
-            m = r.get('monthly')
-            
-            # Handle both dict-style (raw) and flat-style (cached) data
-            if isinstance(d, dict):
-                daily_zone = d.get('zone', '') if d else ''
-                daily_pos = d.get('position_pct', '') if d else ''
-            else:
-                daily_zone = ''
-                daily_pos = ''
-                
-            if isinstance(w, dict):
-                weekly_zone = w.get('zone', '') if w else ''
-                weekly_pos = w.get('position_pct', '') if w else ''
-            else:
-                weekly_zone = ''
-                weekly_pos = ''
-                
-            if isinstance(m, dict):
-                monthly_zone = m.get('zone', '') if m else ''
-                monthly_pos = m.get('position_pct', '') if m else ''
-            else:
-                monthly_zone = ''
-                monthly_pos = ''
+            d = _get_tf(r, 'daily')
+            w = _get_tf(r, 'weekly')
+            m = _get_tf(r, 'monthly')
             
             clean_sym = str(r.get('symbol', '')).replace('.NS', '').strip().upper()
             
@@ -5400,12 +5367,24 @@ if selected_module == "📊 Volume Profile":
                 'Symbol': clean_sym,
                 'CMP': r.get('cmp', 0),
                 'Market Cap (Cr)': round(r.get('market_cap_cr', 0), 2),
-                'Daily Zone': daily_zone,
-                'Daily VA%': daily_pos,
-                'Weekly Zone': weekly_zone,
-                'Weekly VA%': weekly_pos,
-                'Monthly Zone': monthly_zone,
-                'Monthly VA%': monthly_pos
+                # Daily levels
+                'D Zone': d['zone'],
+                'D Buy Range (VAL)': d['val'],
+                'D Target (POC)': d['poc'],
+                'D Resistance (VAH)': d['vah'],
+                'D VA%': d['va_pct'],
+                # Weekly levels
+                'W Zone': w['zone'],
+                'W Buy Range (VAL)': w['val'],
+                'W Target (POC)': w['poc'],
+                'W Resistance (VAH)': w['vah'],
+                'W VA%': w['va_pct'],
+                # Monthly levels
+                'M Zone': m['zone'],
+                'M Buy Range (VAL)': m['val'],
+                'M Target (POC)': m['poc'],
+                'M Resistance (VAH)': m['vah'],
+                'M VA%': m['va_pct']
             })
             rank += 1
             
@@ -5416,11 +5395,16 @@ if selected_module == "📊 Volume Profile":
         with col1:
             st.metric("Total Scanned", len(df_vp))
         with col2:
-            st.metric("Daily Buy Zone", len(df_vp[df_vp['Daily Zone'] == 'Buy Zone']) if not df_vp.empty else 0)
+            st.metric("Daily Buy Zone", len(df_vp[df_vp['D Zone'] == 'Buy Zone']) if not df_vp.empty else 0)
         with col3:
-            st.metric("Weekly Buy Zone", len(df_vp[df_vp['Weekly Zone'] == 'Buy Zone']) if not df_vp.empty else 0)
+            st.metric("Weekly Buy Zone", len(df_vp[df_vp['W Zone'] == 'Buy Zone']) if not df_vp.empty else 0)
         with col4:
-            st.metric("Monthly Buy Zone", len(df_vp[df_vp['Monthly Zone'] == 'Buy Zone']) if not df_vp.empty else 0)
+            st.metric("Monthly Buy Zone", len(df_vp[df_vp['M Zone'] == 'Buy Zone']) if not df_vp.empty else 0)
+        
+        # Column groups per timeframe
+        daily_cols = ['Rank', 'Symbol', 'CMP', 'D Zone', 'D Buy Range (VAL)', 'D Target (POC)', 'D Resistance (VAH)', 'D VA%']
+        weekly_cols = ['Rank', 'Symbol', 'CMP', 'W Zone', 'W Buy Range (VAL)', 'W Target (POC)', 'W Resistance (VAH)', 'W VA%']
+        monthly_cols = ['Rank', 'Symbol', 'CMP', 'M Zone', 'M Buy Range (VAL)', 'M Target (POC)', 'M Resistance (VAH)', 'M VA%']
         
         # Timeframe Tabs
         tab_all, tab_daily, tab_weekly, tab_monthly = st.tabs(["📊 All Stocks", "📅 Daily", "📅 Weekly", "📅 Monthly"])
@@ -5437,12 +5421,13 @@ if selected_module == "📊 Volume Profile":
             )
         
         with tab_daily:
-            df_daily = df_vp[df_vp['Daily Zone'] != ''][['Rank', 'Symbol', 'CMP', 'Market Cap (Cr)', 'Daily Zone', 'Daily VA%']].copy()
-            df_daily = df_daily.sort_values('Daily VA%', ascending=True)
+            df_daily = df_vp[df_vp['D Zone'] != ''][daily_cols].copy()
+            df_daily = df_daily.sort_values('D VA%', ascending=True)
             df_daily['Rank'] = range(1, len(df_daily) + 1)
             
-            buy_daily = df_daily[df_daily['Daily Zone'] == 'Buy Zone']
+            buy_daily = df_daily[df_daily['D Zone'] == 'Buy Zone']
             st.markdown(f"**{len(buy_daily)}** stocks in Daily Buy Zone | **{len(df_daily)}** total with daily data")
+            st.caption("💡 **Buy Range (VAL)** = Support level to buy near | **Target (POC)** = High-volume fair value | **Resistance (VAH)** = Upper boundary")
             st.dataframe(df_daily, use_container_width=True, hide_index=True)
             csv_daily = df_daily.to_csv(index=False).encode('utf-8')
             st.download_button(
@@ -5454,12 +5439,13 @@ if selected_module == "📊 Volume Profile":
             )
         
         with tab_weekly:
-            df_weekly = df_vp[df_vp['Weekly Zone'] != ''][['Rank', 'Symbol', 'CMP', 'Market Cap (Cr)', 'Weekly Zone', 'Weekly VA%']].copy()
-            df_weekly = df_weekly.sort_values('Weekly VA%', ascending=True)
+            df_weekly = df_vp[df_vp['W Zone'] != ''][weekly_cols].copy()
+            df_weekly = df_weekly.sort_values('W VA%', ascending=True)
             df_weekly['Rank'] = range(1, len(df_weekly) + 1)
             
-            buy_weekly = df_weekly[df_weekly['Weekly Zone'] == 'Buy Zone']
+            buy_weekly = df_weekly[df_weekly['W Zone'] == 'Buy Zone']
             st.markdown(f"**{len(buy_weekly)}** stocks in Weekly Buy Zone | **{len(df_weekly)}** total with weekly data")
+            st.caption("💡 **Buy Range (VAL)** = Support level to buy near | **Target (POC)** = High-volume fair value | **Resistance (VAH)** = Upper boundary")
             st.dataframe(df_weekly, use_container_width=True, hide_index=True)
             csv_weekly = df_weekly.to_csv(index=False).encode('utf-8')
             st.download_button(
@@ -5471,12 +5457,13 @@ if selected_module == "📊 Volume Profile":
             )
         
         with tab_monthly:
-            df_monthly = df_vp[df_vp['Monthly Zone'] != ''][['Rank', 'Symbol', 'CMP', 'Market Cap (Cr)', 'Monthly Zone', 'Monthly VA%']].copy()
-            df_monthly = df_monthly.sort_values('Monthly VA%', ascending=True)
+            df_monthly = df_vp[df_vp['M Zone'] != ''][monthly_cols].copy()
+            df_monthly = df_monthly.sort_values('M VA%', ascending=True)
             df_monthly['Rank'] = range(1, len(df_monthly) + 1)
             
-            buy_monthly = df_monthly[df_monthly['Monthly Zone'] == 'Buy Zone']
+            buy_monthly = df_monthly[df_monthly['M Zone'] == 'Buy Zone']
             st.markdown(f"**{len(buy_monthly)}** stocks in Monthly Buy Zone | **{len(df_monthly)}** total with monthly data")
+            st.caption("💡 **Buy Range (VAL)** = Support level to buy near | **Target (POC)** = High-volume fair value | **Resistance (VAH)** = Upper boundary")
             st.dataframe(df_monthly, use_container_width=True, hide_index=True)
             csv_monthly = df_monthly.to_csv(index=False).encode('utf-8')
             st.download_button(
@@ -5494,16 +5481,16 @@ if selected_module == "📊 Volume Profile":
             with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
                 df_vp.to_excel(writer, sheet_name='All Stocks', index=False)
                 if not df_vp.empty:
-                    df_d_buy = df_vp[df_vp['Daily Zone'] == 'Buy Zone']
-                    df_w_buy = df_vp[df_vp['Weekly Zone'] == 'Buy Zone']
-                    df_m_buy = df_vp[df_vp['Monthly Zone'] == 'Buy Zone']
+                    df_d_buy = df_vp[df_vp['D Zone'] == 'Buy Zone']
+                    df_w_buy = df_vp[df_vp['W Zone'] == 'Buy Zone']
+                    df_m_buy = df_vp[df_vp['M Zone'] == 'Buy Zone']
                     
                     if not df_d_buy.empty:
-                        df_d_buy.to_excel(writer, sheet_name='Daily Buy Zone', index=False)
+                        df_d_buy[daily_cols].to_excel(writer, sheet_name='Daily Buy Zone', index=False)
                     if not df_w_buy.empty:
-                        df_w_buy.to_excel(writer, sheet_name='Weekly Buy Zone', index=False)
+                        df_w_buy[weekly_cols].to_excel(writer, sheet_name='Weekly Buy Zone', index=False)
                     if not df_m_buy.empty:
-                        df_m_buy.to_excel(writer, sheet_name='Monthly Buy Zone', index=False)
+                        df_m_buy[monthly_cols].to_excel(writer, sheet_name='Monthly Buy Zone', index=False)
             
             st.download_button(
                 label="📥 Download Complete Report (Excel - All Sheets)",
@@ -5514,3 +5501,4 @@ if selected_module == "📊 Volume Profile":
             )
         except ImportError:
             st.caption("ℹ️ Excel export unavailable — use CSV downloads above instead.")
+
