@@ -4992,9 +4992,9 @@ with tab_vpa:
         
         def get_action_signal_text(short, mid, max_t, max_val):
             if max_val > 4.0:
-                return "Hyper-Extended / Parabolic (Take Profits)"
+                return "Hyper-Extended / Parabolic (Avoid Fresh Entry)"
             elif 2.0 < max_val <= 4.0:
-                return "Slightly Overextended (Trim / Hold)"
+                return "Slightly Overextended (Avoid Fresh Entry)"
             elif 0.5 < max_val <= 2.0 and mid == 1 and short == 1:
                 return "Perfect Buy / Strong Hold"
             elif 0 < max_val <= 0.5 and mid == 1 and short == 1:
@@ -5010,9 +5010,9 @@ with tab_vpa:
         
         def get_signal(short, mid, max_t, max_val):
             if max_val > 4.0:
-                return "Sell (Take Profits)"
+                return "Buy"
             elif max_val > 2.0:
-                return "Hold"
+                return "Buy"
             return "Buy" if (max_val > 0.5 and mid == 1) or (max_val > 0 and mid == 1 and short == 1) else "Hold" if max_val > 0.5 else "Sell"
 
         only_buy_signals = st.checkbox("🟢 Show Only 'Buy' Signals", value=False)
