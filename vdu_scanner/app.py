@@ -5206,6 +5206,7 @@ with tab_frequent:
 
 # --- VOLUME PROFILE SCANNER TAB ---
 with tab_vol_profile:
+    st.error("DEBUG: If you see this, tab_vol_profile is executing!")
     st.markdown("### 📊 Volume Profile Zones (Daily, Weekly, Monthly)")
     st.info("Scans ALL NSE listed stocks for POC, VAH, VAL levels. Filters: Price > ₹100, Market Cap > 2000 Cr.")
     
