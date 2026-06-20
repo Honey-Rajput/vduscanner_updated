@@ -897,7 +897,7 @@ if 'structural_vcp_results' not in st.session_state:
     st.session_state.structural_vcp_results = None
 # Initialize global status dictionary if not present (shared across all threads/sessions)
 if "MOMENTUM_SCAN_STATUS" not in globals():
-    global MOMENTUM_SCAN_STATUS
+    # Removed redundant global statement
     MOMENTUM_SCAN_STATUS = {
         "is_running": False,
         "status_text": "Not started",
