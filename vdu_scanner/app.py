@@ -1871,7 +1871,7 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
             return res
 
 
-        import concurrent.futures
+        import joblib
         import os
         
         status_box.text(f"Phase 3/3: Scanning {n_stocks} active NSE listed equities (Price > ₹200)...")
@@ -1879,42 +1879,44 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
         
         # Parallel Execution Core
         def process_and_fetch_if_needed(sym, df, *args):
-            if df is None:
-                df = fetch_ohlcv(sym)
-            return process_single_symbol(sym, df, *args)
+            try:
+                if df is None:
+                    df = fetch_ohlcv(sym)
+                return process_single_symbol(sym, df, *args)
+            except Exception as e:
+                print(f"Internal error processing {sym}: {e}")
+                return {"failed": True, "error": str(e)}
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(32, os.cpu_count() * 2 if os.cpu_count() else 8)) as executor:
-            future_to_sym = {}
-            for sym in scan_symbols:
-                df = bulk_data.get(sym.strip().upper())
-                future = executor.submit(process_and_fetch_if_needed, sym, df, open_price_map, close_price_map, high_price_map, low_price_map, volume_map, min_dry, max_dry, min_vol_ratio, min_price_chg, min_dry_spikes, min_signal_str, above_50dma_only, above_200dma_only, vcp_max_tightness)
-                future_to_sym[future] = sym
-                
-            for i, future in enumerate(concurrent.futures.as_completed(future_to_sym)):
-                sym = future_to_sym[future]
-                try:
-                    res = future.result()
-                    if res.get("failed"):
-                        failed_count += 1
-                        continue
-                    if res.get("gapup"): gapup_list.append(res["gapup"])
-                    if res.get("above_ma"): above_ma_list.append(res["above_ma"])
-                    if res.get("support_ma"): support_ma_list.append(res["support_ma"])
-                    if res.get("crossover_ma"): crossover_ma_list.append(res["crossover_ma"])
-                    if res.get("minervini"): minervini_list.append(res["minervini"])
-                    if res.get("flagged"): flagged_list.append(res["flagged"])
-                    if res.get("wt"): wt_list.append(res["wt"])
-                    if res.get("vcs"): vcs_list.append(res["vcs"])
-                    if res.get("structural_vcp"): structural_vcp_list.append(res["structural_vcp"])
-                    if res.get("vpa"): vpa_list.append(res["vpa"])
-                except Exception as exc:
-                    print(f"Error processing {sym}: {exc}")
+        n_workers = min(32, os.cpu_count() * 2 if os.cpu_count() else 8)
+        generator = joblib.Parallel(n_jobs=n_workers, return_as="generator_unordered")(
+            joblib.delayed(process_and_fetch_if_needed)(
+                sym, bulk_data.get(sym.strip().upper()), open_price_map, close_price_map, high_price_map, low_price_map, volume_map, min_dry, max_dry, min_vol_ratio, min_price_chg, min_dry_spikes, min_signal_str, above_50dma_only, above_200dma_only, vcp_max_tightness
+            ) for sym in scan_symbols
+        )
+        
+        for i, res in enumerate(generator):
+            try:
+                if res.get("failed"):
                     failed_count += 1
-                    
-                # Throttle UI Updates (every 25 iterations or at the end)
-                if (i + 1) % 25 == 0 or i + 1 == n_stocks:
-                    status_box.text(f"Phase 3/3: Scanning ({i+1}/{n_stocks})")
-                    prog_bar.progress((i + 1) / n_stocks)
+                    continue
+                if res.get("gapup"): gapup_list.append(res["gapup"])
+                if res.get("above_ma"): above_ma_list.append(res["above_ma"])
+                if res.get("support_ma"): support_ma_list.append(res["support_ma"])
+                if res.get("crossover_ma"): crossover_ma_list.append(res["crossover_ma"])
+                if res.get("minervini"): minervini_list.append(res["minervini"])
+                if res.get("flagged"): flagged_list.append(res["flagged"])
+                if res.get("wt"): wt_list.append(res["wt"])
+                if res.get("vcs"): vcs_list.append(res["vcs"])
+                if res.get("structural_vcp"): structural_vcp_list.append(res["structural_vcp"])
+                if res.get("vpa"): vpa_list.append(res["vpa"])
+            except Exception as exc:
+                print(f"Error processing result: {exc}")
+                failed_count += 1
+                
+            # Throttle UI Updates (every 25 iterations or at the end)
+            if (i + 1) % 25 == 0 or i + 1 == n_stocks:
+                status_box.text(f"Phase 3/3: Scanning ({i+1}/{n_stocks})")
+                prog_bar.progress((i + 1) / n_stocks)
 
         # Clean progress assets
         prog_bar.empty()
