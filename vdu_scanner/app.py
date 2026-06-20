@@ -4991,8 +4991,10 @@ with tab_vpa:
         import pandas as pd
         
         def get_action_signal_text(short, mid, max_t, max_val):
-            if max_val > 2.0:
-                return "Overextended (Trim / Hold)"
+            if max_val > 4.0:
+                return "Hyper-Extended / Parabolic (Take Profits)"
+            elif 2.0 < max_val <= 4.0:
+                return "Slightly Overextended (Trim / Hold)"
             elif 0.5 < max_val <= 2.0 and mid == 1 and short == 1:
                 return "Perfect Buy / Strong Hold"
             elif 0 < max_val <= 0.5 and mid == 1 and short == 1:
@@ -5007,7 +5009,9 @@ with tab_vpa:
                 return "Neutral / Choppy"
         
         def get_signal(short, mid, max_t, max_val):
-            if max_val > 2.0:
+            if max_val > 4.0:
+                return "Sell (Take Profits)"
+            elif max_val > 2.0:
                 return "Hold"
             return "Buy" if (max_val > 0.5 and mid == 1) or (max_val > 0 and mid == 1 and short == 1) else "Hold" if max_val > 0.5 else "Sell"
 
