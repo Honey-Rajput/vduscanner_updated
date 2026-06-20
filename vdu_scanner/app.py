@@ -1351,9 +1351,9 @@ min_vol_ratio = st.sidebar.slider(
     "Min Volume Ratio",
     min_value=2.0,
     max_value=10.0,
-    value=2.0,
+    value=2.5,
     step=0.5,
-    key="vdu_min_vol_ratio_v4",
+    key="vdu_min_vol_ratio_v5",
     help="Breakout day volume compared to dry average volume (e.g., 2.0 = 2x surge)"
 )
 
@@ -1361,9 +1361,9 @@ min_price_chg = st.sidebar.slider(
     "Min Price Change %",
     min_value=1.5,
     max_value=10.0,
-    value=1.5,
+    value=7.0,
     step=0.5,
-    key="vdu_min_price_chg_v4",
+    key="vdu_min_price_chg_v5",
     help="Minimum price percentage increase on the breakout day (Close vs Open)"
 )
 
@@ -1371,9 +1371,9 @@ dry_zone_range = st.sidebar.slider(
     "Dry Zone Range (Trading Days)",
     min_value=0,
     max_value=150,
-    value=(15, 85),
+    value=(15, 150),
     step=5,
-    key="vdu_dry_zone_range_v4",
+    key="vdu_dry_zone_range_v5",
     help="Configure the minimum and maximum duration of the dry zone consolidation period (up to 150 days)"
 )
 
@@ -1381,9 +1381,9 @@ min_dry_spikes = st.sidebar.slider(
     "Min Spikes in Dry Zone",
     min_value=0,
     max_value=20,
-    value=2,
+    value=7,
     step=1,
-    key="vdu_min_dry_spikes_v5",
+    key="vdu_min_dry_spikes_v6",
     help="Requires at least this many volume accumulation spikes inside the dry zone window (up to 20 spikes)"
 )
 
@@ -1391,9 +1391,9 @@ min_signal_str = st.sidebar.slider(
     "Min Signal Strength Score",
     min_value=0,
     max_value=100,
-    value=40,
+    value=50,
     step=5,
-    key="vdu_min_signal_str_v4",
+    key="vdu_min_signal_str_v5",
     help="Filter stocks based on overall calculated algorithmic rating"
 )
 
