@@ -1008,16 +1008,22 @@ def get_cached_volume_profile(date_str: str) -> list[dict]:
         results = []
         for row in rows:
             results.append({
-                'Symbol': row['symbol'],
-                'Company Name': row['company_name'],
-                'CMP': row['cmp'],
-                'Market Cap (Cr)': row['market_cap_cr'],
-                'Daily Zone': row['daily_zone'],
-                'Daily Pos': row['daily_pos'] if row['daily_pos'] is not None else "",
-                'Weekly Zone': row['weekly_zone'],
-                'Weekly Pos': row['weekly_pos'] if row['weekly_pos'] is not None else "",
-                'Monthly Zone': row['monthly_zone'],
-                'Monthly Pos': row['monthly_pos'] if row['monthly_pos'] is not None else ""
+                'symbol': row['symbol'],
+                'company_name': row['company_name'],
+                'cmp': row['cmp'],
+                'market_cap_cr': row['market_cap_cr'],
+                'daily': {
+                    'zone': row['daily_zone'],
+                    'position_pct': row['daily_pos'] if row['daily_pos'] is not None else ""
+                },
+                'weekly': {
+                    'zone': row['weekly_zone'],
+                    'position_pct': row['weekly_pos'] if row['weekly_pos'] is not None else ""
+                },
+                'monthly': {
+                    'zone': row['monthly_zone'],
+                    'position_pct': row['monthly_pos'] if row['monthly_pos'] is not None else ""
+                }
             })
         return results
     except Exception as e:

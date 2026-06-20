@@ -1311,6 +1311,10 @@ if st.session_state.scan_results is None and not st.session_state.get('db_cache_
                     st.session_state.vpa_results = database.get_cached_vpa(latest_date_str)
                 except Exception:
                     st.session_state.vpa_results = []
+                try:
+                    st.session_state.vp_results = database.get_cached_volume_profile(latest_date_str)
+                except Exception:
+                    st.session_state.vp_results = []
                 st.session_state.total_scanned = cached_log.get('total_scanned', 0)
                 st.session_state.failed_count = 0
                 st.session_state.last_scanned = latest_date_str + " (Loaded from DB Cache)"
@@ -3866,13 +3870,14 @@ if selected_module == "📅 Scan History":
         st.markdown("<br>", unsafe_allow_html=True)
         
         # Nested sub-tabs inside History tab
-        sub_breakout, sub_gapup, sub_above_ma, sub_support_ma, sub_crossover_ma, sub_wt = st.tabs([
+        sub_breakout, sub_gapup, sub_above_ma, sub_support_ma, sub_crossover_ma, sub_wt, sub_vp = st.tabs([
             "📊 VDU Breakouts",
             "🚀 Gap-Ups",
             "📈 Above 20 & 50 SMA",
             "🛡️ 65 SMA Support",
             "🔄 MA Crossovers",
-            "🌊 Wave Trend"
+            "🌊 Wave Trend",
+            "📊 Volume Profile"
         ])
         
         # 1. Historical Breakouts
