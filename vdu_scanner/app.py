@@ -1743,11 +1743,11 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 else:
                     target_multiplier = 1.10; target_pct_str = "+10.0%"
                     
-                gap_buy_price = round(today_close_val, 2)
-                gap_exit_price = round(today_open_val * 0.98, 2) 
+                gap_buy_price = round(min(today_open_val, yesterday_close_val) * 0.99, 2)  # Support = gap base (previous close)
+                gap_exit_price = round(yesterday_close_val * 0.97, 2)  # Stop below gap fill level
                 gap_target_price = round(today_close_val * target_multiplier, 2) 
                 gap_confidence = "High (Gap-Up Momentum)" if gap_pct > 3.0 else "Medium (Gap-Up)"
-                base_gap_rec = (f"Bullish gap-up breakout of {gap_pct:.2f}% on strong momentum. Buy near ₹{gap_buy_price:.2f} "
+                base_gap_rec = (f"Bullish gap-up breakout of {gap_pct:.2f}% on strong momentum. Buy near support ₹{gap_buy_price:.2f} "
                                 f"with a stop loss below today's open price at ₹{gap_exit_price:.2f} "
                                 f"targeting dynamic swing target ₹{gap_target_price:.2f} ({target_pct_str}).")
                 gap_recommendation = compute_rich_analysis(df, sym, "Gap-Up", base_gap_rec, indicators=ind)
@@ -1771,11 +1771,11 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 sma200 = float(today_row['SMA200'])
                 
                 if c_val > sma20 and c_val > sma50:
-                    above_buy_price = round(today_close_val, 2)
+                    above_buy_price = round(sma20, 2)  # Support = 20 SMA (nearest MA support)
                     above_exit_price = round(sma50 * 0.97, 2) 
                     above_target_price = round(today_close_val * 1.12, 2) 
                     above_confidence = "High (Uptrend)" if sma20 > sma50 and sma50 > sma200 else "Medium-High (Uptrend)"
-                    base_above_rec = (f"Strong medium-term uptrend. Close above 20 SMA & 50 SMA. Buy near ₹{above_buy_price:.2f} "
+                    base_above_rec = (f"Strong medium-term uptrend. Close above 20 SMA & 50 SMA. Buy near support ₹{above_buy_price:.2f} (20 SMA) "
                                       f"with stop below 50 SMA support at ₹{above_exit_price:.2f} targeting momentum target ₹{above_target_price:.2f}.")
                     res["above_ma"] = {
                         "symbol": sym.strip().upper(), "company_name": get_company_name(sym), "cmp": today_close_val,
@@ -1793,11 +1793,12 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 is_green_candle = c_val > o_val; is_up_move = c_val > yesterday_c; holds_above = c_val > sma65
                 
                 if (tested_today or tested_yesterday) and holds_above and is_green_candle and is_up_move:
-                    support_buy_price = round(today_close_val, 2); support_exit_price = round(sma65 * 0.97, 2) 
+                    support_buy_price = round(sma65, 2)  # Support = 65 SMA (the actual support level)
+                    support_exit_price = round(sma65 * 0.97, 2) 
                     support_target_price = round(today_close_val * 1.15, 2) 
                     support_confidence = "High (Pullback Support)" if today_close_val > yesterday_row['Close'] else "Medium (Pullback Support)"
                     base_support_rec = (f"Institutional pullback testing critical 65 SMA support (₹{sma65:.2f}). "
-                                        f"Buy around ₹{support_buy_price:.2f} with tight stop just below SMA at ₹{support_exit_price:.2f} targeting bounce to ₹{support_target_price:.2f}.")
+                                        f"Buy near support ₹{support_buy_price:.2f} (65 SMA) with tight stop just below SMA at ₹{support_exit_price:.2f} targeting bounce to ₹{support_target_price:.2f}.")
                     res["support_ma"] = {
                         "symbol": sym.strip().upper(), "company_name": get_company_name(sym), "cmp": today_close_val,
                         "day_change_pct": round(((today_close_val - yesterday_row['Close']) / yesterday_row['Close'] * 100), 2),
@@ -1813,10 +1814,12 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                 price_crossed_200 = (yesterday_row['Close'] <= yesterday_row['SMA200']) and (today_row['Close'] > today_row['SMA200'])
                 
                 if crossed_golden or crossed_150 or price_crossed_50 or price_crossed_150 or price_crossed_200:
-                    cross_buy_price = round(today_close_val, 2); cross_exit_price = round(today_close_val * 0.94, 2) 
+                    cross_support = max(s for s in [sma50, sma150, sma200] if s < c_val) if any(s < c_val for s in [sma50, sma150, sma200]) else c_val * 0.94
+                    cross_buy_price = round(cross_support * 1.01, 2)  # Support = nearest MA below price
+                    cross_exit_price = round(cross_support * 0.96, 2) 
                     cross_target_price = round(today_close_val * 1.18, 2) 
                     cross_confidence = "High (Golden Cross)" if crossed_golden else "Medium-High (Crossover)"
-                    base_cross_rec = (f"Technical moving average crossover signal! Buy near ₹{cross_buy_price:.2f} "
+                    base_cross_rec = (f"Technical moving average crossover signal! Buy near support ₹{cross_buy_price:.2f} "
                                       f"to ride the emerging uptrend. Set stop loss at ₹{cross_exit_price:.2f} targeting swing high ₹{cross_target_price:.2f}.")
                     res["crossover_ma"] = {
                         "symbol": sym.strip().upper(), "company_name": get_company_name(sym), "cmp": today_close_val,
@@ -1848,11 +1851,12 @@ if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
                                           f"having run up {run_up_52w:.1f}% from its 52w low and holding {run_up_200:.1f}% above its 200 SMA support. "
                                           f"Buy around CMP ₹{c_val:.2f}. Set stop loss at ₹{exit_price:.2f} (tight support lock) "
                                           f"targeting momentum swing target of ₹{target_price:.2f} (remaining potential +{rem_pct:.1f}%).")
+                    min_support = max(s for s in [sma50, sma150, sma200] if s < c_val) if any(s < c_val for s in [sma50, sma150, sma200]) else sma200
                     res["minervini"] = {
                         "symbol": sym.strip().upper(), "company_name": get_company_name(sym), "cmp": today_close_val,
                         "day_change_pct": round(((today_close_val - yesterday_row['Close']) / yesterday_row['Close'] * 100), 2),
                         "setup_type": "minervini", "run_up_200": run_up_200, "run_up_52w": run_up_52w, "is_early": is_early,
-                        "buy_price": round(c_val, 2), "exit_price": exit_price, "target_price": target_price,
+                        "buy_price": round(min_support * 1.01, 2), "exit_price": exit_price, "target_price": target_price,
                         "confidence": min_confidence, "recommendation": compute_rich_analysis(df_ma, sym, "Minervini Stage-2", base_minervini_rec, indicators=ind)
                     }
                     
