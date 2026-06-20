@@ -229,7 +229,7 @@ def scan_stock(
     return {
         "symbol": symbol.strip().upper(),
         "company_name": company_name,
-        "cmp": buy_price,
+        "cmp": cmp,
         "day_change_pct": round(day_change_pct, 2),
         "today_volume": int(today['Volume']),
         "dry_avg_vol": round(dry_avg_vol, 1),
@@ -359,7 +359,7 @@ def scan_wt_cross(symbol: str, df: pd.DataFrame, wt_oversold_threshold: float = 
     return {
         "symbol": symbol.strip().upper(),
         "company_name": company_name,
-        "cmp": buy_price,
+        "cmp": cmp,
         "day_change_pct": round(day_change_pct, 2),
         "wt_value": round(today_wt1, 2),
         "wt2_value": round(today_wt2, 2),
@@ -697,7 +697,7 @@ def scan_monthly_momentum(symbol: str, df_monthly: pd.DataFrame, market_cap_cr: 
         return {
             "symbol": symbol.strip().upper(),
             "company_name": company_name,
-            "cmp": buy_price,
+            "cmp": cmp,
             "day_change_pct": day_change_pct,
             "ema8": round(ema8_val, 2),
             "ema12": round(ema12_val, 2),
@@ -854,7 +854,7 @@ def scan_weekly_momentum(symbol: str, df_weekly: pd.DataFrame, market_cap_cr: fl
         return {
             "symbol": symbol.strip().upper(),
             "company_name": company_name,
-            "cmp": buy_price,
+            "cmp": cmp,
             "weekly_chg_pct": weekly_chg_pct,
             "prev_close": round(prev_close, 2),
             "curr_open": round(curr_open, 2),
@@ -1134,7 +1134,7 @@ def scan_vcs(symbol: str, df: pd.DataFrame, lenShort=13, lenLong=63, lenVol=50, 
             return {
                 "symbol": symbol.strip().upper(),
                 "company_name": company_name,
-                "cmp": buy_price,
+                "cmp": cmp,
                 "day_change_pct": round(day_change_pct, 2),
                 "vcs_score": round(today_score, 2),
                 "volume": int(today['Volume']),
@@ -1278,8 +1278,26 @@ def scan_monthly_early_stage2(symbol: str, df_monthly: pd.DataFrame, max_run_up_
         return None
 
 def calc_atr_from_tr(tr: pd.Series, length: int) -> pd.Series:
-    """Calculate Average True Range using pre-computed TR (RMA method as in Pine Script)"""
-    return tr.ewm(alpha=1/length, adjust=False).mean()
+    """Calculate Average True Range using RMA method exactly as in Pine Script"""
+    if len(tr) < length:
+        return tr.ewm(alpha=1/length, adjust=False).mean()
+        
+    sma = tr.rolling(window=length).mean()
+    rma_values = np.zeros(len(tr))
+    
+    tr_values = tr.values
+    sma_values = sma.values
+    alpha = 1.0 / length
+    
+    first_valid_idx = length - 1
+    rma_values[:first_valid_idx] = np.nan
+    if first_valid_idx < len(tr):
+        rma_values[first_valid_idx] = sma_values[first_valid_idx]
+        
+    for i in range(first_valid_idx + 1, len(tr)):
+        rma_values[i] = alpha * tr_values[i] + (1 - alpha) * rma_values[i-1]
+        
+    return pd.Series(rma_values, index=tr.index)
 
 def calc_vpa_trends(df: pd.DataFrame) -> dict:
     """
@@ -1545,7 +1563,7 @@ def scan_structural_vcp(symbol: str, df: pd.DataFrame, lookback: int = 120, pivo
             "depths_pct": [round(d*100, 1) for d in depths],
             "vol_50d": int(vol_50d_avg),
             "vol_5d": int(vol_5d_avg),
-            "cmp": buy_price,
+            "cmp": cmp,
             "buy_price": buy_price,
             "exit_price": exit_price,
             "target_price": target_price,
