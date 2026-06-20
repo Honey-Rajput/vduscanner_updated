@@ -5229,7 +5229,7 @@ with tab_vol_profile:
                 total_symbols = len(all_symbols)
                 
                 import concurrent.futures
-                from vdu_scanner.scanner import scan_volume_profile
+                from scanner import scan_volume_profile
                 
                 def _scan_vp(symbol):
                     df = fetch_ohlcv_timeframe(symbol, period='2y')
