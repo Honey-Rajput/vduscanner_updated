@@ -3792,13 +3792,15 @@ with tab_minervini:
     # Trend Template Rules explanation
     st.markdown("<br>", unsafe_allow_html=True)
     with st.expander("📖 How Mark Minervini Stage-2 Trend Template Works"):
-        st.markdown("""
+        st.markdown(r"""
         **Mark Minervini Stage-2 Trend Template Rules**
         
         To qualify as an institutional Stage-2 stock, an asset must meet all of the following rules:
         
         1. **Price is Above 150 EMA and 200 SMA:** Confirms a structural long-term uptrend.
         2. **150-day EMA is Above the 200-day SMA:** Confirms standard momentum alignment.
+        - **Early Stage-2 Accumulation:** Stocks trading $\le 20\%$ above their rising 200 SMA are in standard buying zones. They offer maximum upside potential with high-probability breakout rates.
+        - **Extended / Overbought:** Stocks trading $> 20\%$ above the 200 SMA are mathematically overextended. They are prone to mean-reversion pullbacks and carry a high failure rate for new breakouts.
         3. **200-day SMA is Rising:** Confirms the institutional floor is actively tilting upwards.
         4. **50-day SMA is Above 150 EMA and 200 SMA:** Short-term momentum is supportive of rapid moves.
         5. **Current Price is Above the 50-day SMA:** Confirms standard breakouts are in active trading.
