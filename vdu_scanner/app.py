@@ -3413,7 +3413,9 @@ with tab_wavetrend:
     if 'wt_results_by_tf' not in st.session_state:
         st.session_state.wt_results_by_tf = {}
         
-    if wt_cache_key not in st.session_state.wt_results_by_tf or st.session_state.wt_results_by_tf[wt_cache_key] is None:
+    run_wt_btn = st.button("🌊 Run Advanced WaveTrend Scan", key="run_wt_scan_btn", use_container_width=True)
+    
+    if run_wt_btn:
         # Resolve symbols to scan: use all scanned breakout symbols or fallback to NIFTY 100/50
         symbols_to_scan = []
         if st.session_state.scan_results:
