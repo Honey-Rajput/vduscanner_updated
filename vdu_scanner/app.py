@@ -5222,36 +5222,95 @@ with tab_vol_profile:
                 status_text = st.empty()
                 
                 from data_fetcher import get_all_nse_symbols
+                import yfinance as yf
+                import pandas as pd
+                import joblib
+                import os
+                import concurrent.futures
+                from scanner import scan_volume_profile
+                
                 raw_symbols = get_all_nse_symbols()
                 all_symbols = [s if s.endswith('.NS') else f"{s}.NS" for s in raw_symbols if str(s).strip()]
                 market_caps = {}
                 
                 total_symbols = len(all_symbols)
                 
-                import concurrent.futures
-                from scanner import scan_volume_profile
+                # Phase 1: Bulk OHLCV Download
+                status_text.text(f"Phase 1: Downloading 2 years of history for {total_symbols} stocks...")
+                chunk_size = 300
+                sym_chunks = [all_symbols[i:i + chunk_size] for i in range(0, len(all_symbols), chunk_size)]
                 
-                def _scan_vp(symbol):
-                    df = fetch_ohlcv_timeframe(symbol, period='2y')
-                    mc = market_caps.get(symbol, 0)
-                    if df is not None and len(df) >= 100:
-                        return scan_volume_profile(symbol, df, mc)
-                    return None
+                valid_data = {}
+                
+                def download_vp_chunk(chunk_idx, chunk):
+                    chunk_data = {}
+                    try:
+                        df_bulk = yf.download(tickers=chunk, period="2y", interval="1d", progress=False, threads=True)
+                        if isinstance(df_bulk.columns, pd.MultiIndex):
+                            for sym in chunk:
+                                try:
+                                    if 'Close' in df_bulk.columns.levels[0]:
+                                        ticker_df = df_bulk.xs(sym, axis=1, level=1).copy()
+                                        ticker_df = ticker_df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+                                        if len(ticker_df) >= 100:
+                                            ticker_df = ticker_df.reset_index()
+                                            ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
+                                            ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
+                                            chunk_data[sym] = ticker_df
+                                except Exception:
+                                    pass
+                        else:
+                            if len(chunk) == 1 and not df_bulk.empty and 'Close' in df_bulk:
+                                ticker_df = df_bulk[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+                                if len(ticker_df) >= 100:
+                                    ticker_df = ticker_df.reset_index()
+                                    ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
+                                    ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
+                                    chunk_data[chunk[0]] = ticker_df
+                    except Exception:
+                        pass
+                    return chunk_data
                     
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, total_symbols)) as executor:
-                    futures = {executor.submit(_scan_vp, sym): sym for sym in all_symbols}
-                    done_count = 0
-                    for future in concurrent.futures.as_completed(futures):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = []
+                    for chunk_idx, chunk in enumerate(sym_chunks):
+                        futures.append(executor.submit(download_vp_chunk, chunk_idx, chunk))
+                    
+                    for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                        res_data = future.result()
+                        valid_data.update(res_data)
+                        scan_progress.progress((i + 1) / len(sym_chunks) * 0.5)
+                        status_text.text(f"Fetching bulk history chunks... ({i+1}/{len(sym_chunks)})")
+
+                # Phase 2: Compute Volume Profile
+                status_text.text("Phase 2: Calculating Volume Profile (Instant)...")
+                
+                def _process_vp(sym_df_tuple):
+                    sym, df = sym_df_tuple
+                    mc = market_caps.get(sym, 0)
+                    return scan_volume_profile(sym, df, mc)
+                    
+                n_workers = min(32, os.cpu_count() * 2 if os.cpu_count() else 8)
+                generator = joblib.Parallel(n_jobs=n_workers, return_as="generator_unordered")(
+                    joblib.delayed(_process_vp)(item) for item in valid_data.items()
+                )
+                
+                done_count = 0
+                total_to_process = len(valid_data)
+                if total_to_process == 0:
+                    status_text.text("Scan Complete! Found 0 matches.")
+                    scan_progress.progress(1.0)
+                else:
+                    for i, res in enumerate(generator):
                         done_count += 1
-                        res = future.result()
                         if res:
                             vp_list.append(res)
-                        if done_count % 10 == 0:
-                            scan_progress.progress(done_count / total_symbols)
-                            status_text.text(f"Scanning: {done_count}/{total_symbols} | Found: {len(vp_list)}")
-                
-                scan_progress.progress(1.0)
-                status_text.text(f"Scan Complete! Found {len(vp_list)} matches.")
+                        if done_count % 10 == 0 or done_count == total_to_process:
+                            scan_progress.progress(0.5 + (done_count / total_to_process) * 0.5)
+                            status_text.text(f"Scanning Profiles: {done_count}/{total_to_process} | Found: {len(vp_list)}")
+                    
+                    scan_progress.progress(1.0)
+                    status_text.text(f"Scan Complete! Found {len(vp_list)} matches.")
                 
                 if vp_list:
                     st.session_state.vp_results = vp_list
