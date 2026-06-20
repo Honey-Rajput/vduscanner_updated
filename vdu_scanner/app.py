@@ -3998,6 +3998,7 @@ with tab_monthly_mom:
             st.warning("⚠️ Scanners are already running in the background! Please wait for them to complete.")
         else:
             import database
+            from scanner import run_monthly_momentum_update
             
             today_ist = datetime.now(IST_TIMEZONE)
             base_date_monthly = database.get_monthly_base_date(today_ist.year, today_ist.month)
