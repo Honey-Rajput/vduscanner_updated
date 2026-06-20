@@ -3,6 +3,62 @@ import pandas as pd
 import numpy as np
 from config import DRY_VOLUME_THRESHOLD, MIN_VOLUME_RATIO, MIN_PRICE_CHANGE, DRY_ZONE_MIN_DAYS, DRY_ZONE_MAX_DAYS
 
+def calculate_trade_levels(df: pd.DataFrame, cmp: float, indicators: dict = None) -> tuple[float, float, float, float, float]:
+    """
+    Calculates technical trade levels based on Support and Resistance.
+    Returns: (buy_price, exit_price, target_price, primary_support, primary_resistance)
+    """
+    try:
+        # 1. Find Support Levels below CMP
+        support_candidates = []
+        
+        # 20-day and 50-day SMA Support
+        if indicators and 'sma20' in indicators and 'sma50' in indicators:
+            sma20 = float(indicators['sma20'].iloc[-1])
+            sma50 = float(indicators['sma50'].iloc[-1])
+            if sma20 < cmp: support_candidates.append(sma20)
+            if sma50 < cmp: support_candidates.append(sma50)
+        else:
+            sma20 = float(df['Close'].rolling(20).mean().iloc[-1])
+            sma50 = float(df['Close'].rolling(50).mean().iloc[-1])
+            if sma20 < cmp: support_candidates.append(sma20)
+            if sma50 < cmp: support_candidates.append(sma50)
+            
+        # 20-day swing low
+        swing_low_20d = float(df['Low'].iloc[-20:].min())
+        if swing_low_20d < cmp: support_candidates.append(swing_low_20d)
+        
+        # Determine Primary Support
+        valid_supports = [s for s in support_candidates if s < cmp * 0.99] # Must be at least 1% below CMP
+        if valid_supports:
+            primary_support = max(valid_supports)
+        else:
+            primary_support = cmp * 0.95 # Fallback to 5% standard stop
+            
+        # 2. Find Resistance Levels above CMP
+        # 60-day swing high
+        swing_high_60d = float(df['High'].iloc[-60:].max())
+        
+        if swing_high_60d > cmp * 1.05:
+            primary_resistance = swing_high_60d
+        else:
+            primary_resistance = cmp * 1.20 # Fallback 20% target if at ATH
+            
+        # 3. Derive actionable trade levels
+        # Buy price is exactly the support level (or up to 1% above it)
+        buy_price = round(primary_support * 1.01, 2)
+        
+        # Exit price is safely below support
+        exit_price = round(primary_support * 0.96, 2)
+        
+        # Target price aims at resistance
+        target_price = round(primary_resistance * 0.98, 2) # Just below resistance
+        
+        return buy_price, exit_price, target_price, primary_support, primary_resistance
+    except Exception:
+        # Absolute fallback if DataFrame doesn't have enough history
+        return round(cmp, 2), round(cmp * 0.95, 2), round(cmp * 1.15, 2), round(cmp * 0.95, 2), round(cmp * 1.15, 2)
+
 # Pre-load scipy at module level to avoid repeated import overhead in scan_structural_vcp
 try:
     from scipy.signal import find_peaks as _scipy_find_peaks
@@ -147,13 +203,9 @@ def scan_stock(
     high_120d = float(df['High'].max())
     low_120d = float(df['Low'].min())
     
-    # Advanced Trading Setup Calculations:
-    buy_price = round(float(today['Close']), 2)
-    # Swing low stop loss: lowest price of the last 5 days (pullback anchor) minus 2% buffer
-    min_5d_low = float(df['Low'].iloc[-5:].min())
-    exit_price = round(min(buy_price * 0.95, min_5d_low * 0.98), 2)
-    # Target: 15% swing trade objective
-    target_price = round(buy_price * 1.15, 2)
+    # Advanced Trading Setup Calculations based on Support & Resistance:
+    cmp = float(today['Close'])
+    buy_price, exit_price, target_price, support, resistance = calculate_trade_levels(history_df, cmp, indicators)
     
     # Confidence text based on algorithmic signal strength
     if score >= 75:
@@ -165,8 +217,9 @@ def scan_stock(
         
     base_rec = (
         f"Strong institutional VDU breakout! Volume ratio is {volume_ratio:.1f}x with signal score {score}%. "
-        f"Buy around CMP ₹{buy_price:.2f}. Set stop loss at swing low ₹{exit_price:.2f} (risk {(buy_price-exit_price)/buy_price*100:.1f}%) "
-        f"with a target of ₹{target_price:.2f} (potential +15.0%)."
+        f"Buy Range: [₹{buy_price:.2f} to ₹{cmp:.2f}] (Nearest Support is ₹{support:.2f}). "
+        f"Set stop loss securely below support at ₹{exit_price:.2f} "
+        f"with a target near overhead resistance at ₹{target_price:.2f}."
     )
     recommendation = compute_rich_analysis(df_indicators, symbol, "VDU Breakout", base_rec, indicators=indicators)
     
@@ -268,9 +321,8 @@ def scan_wt_cross(symbol: str, df: pd.DataFrame, wt_oversold_threshold: float = 
                     break
     
     # Advanced Trading Setup Calculations for WaveTrend
-    buy_price = round(float(today['Close']), 2)
-    exit_price = round(buy_price * 0.95, 2)
-    target_price = round(buy_price * 1.12, 2)
+    cmp = float(today['Close'])
+    buy_price, exit_price, target_price, support, resistance = calculate_trade_levels(df_copy, cmp, indicators)
     
     # Use pre-computed SMAs if available, otherwise compute
     if 'SMA20' not in df_copy.columns:
@@ -286,15 +338,18 @@ def scan_wt_cross(symbol: str, df: pd.DataFrame, wt_oversold_threshold: float = 
         confidence = "High (WT Buy Signal)"
         base_rec = (
             f"Bullish mean-reversion buy signal (LazyBear Green Dot) triggered in oversold zone! "
-            f"WT1 is {today_wt1:.1f} and crossed above WT2. Buy around CMP ₹{buy_price:.2f}. "
-            f"Place stop loss at ₹{exit_price:.2f} (risk 5.0%) with a target bounce at ₹{target_price:.2f} (+12.0%)."
+            f"WaveTrend (WT1) is heavily oversold at {today_wt1:.1f} and a bullish crossover has been triggered. "
+            f"Buy Range: [₹{buy_price:.2f} to ₹{cmp:.2f}] (Nearest Support is ₹{support:.2f}). "
+            f"Set stop loss securely below support at ₹{exit_price:.2f} "
+            f"with a target near overhead resistance at ₹{target_price:.2f}."
         )
     else:
         confidence = "Medium (WT Oversold)"
         base_rec = (
-            f"Stock is in a deep WaveTrend oversold zone (WT1 = {today_wt1:.1f} is below {wt_oversold_threshold}). "
-            f"No green dot cross yet, but prime for accumulation. Buy on pullbacks near ₹{buy_price:.2f} "
-            f"with stop loss at ₹{exit_price:.2f} and target bounce of ₹{target_price:.2f}."
+            f"WaveTrend (WT1) is in deep oversold territory at {today_wt1:.1f}, indicating exhaustion of selling pressure. "
+            f"Buy Range: [₹{buy_price:.2f} to ₹{cmp:.2f}] (Nearest Support is ₹{support:.2f}). "
+            f"Set stop loss securely below support at ₹{exit_price:.2f} "
+            f"with a target near overhead resistance at ₹{target_price:.2f}."
         )
     recommendation = compute_rich_analysis(df_copy, symbol, "WaveTrend Cross", base_rec, indicators=indicators)
 
@@ -594,11 +649,7 @@ def scan_monthly_momentum(symbol: str, df_monthly: pd.DataFrame, market_cap_cr: 
             return None
 
         # ---- All conditions passed — compute trade setup ----
-        # Monthly ATR-based stop: use last candle's Low as stop anchor
-        last_low = float(df_monthly['Low'].iloc[-1])
-        buy_price  = round(cmp, 2)
-        exit_price = round(last_low * 0.97, 2)   # 3% below monthly low
-        target_price = round(cmp * 1.20, 2)       # 20% swing target (1-2 months)
+        buy_price, exit_price, target_price, support, resistance = calculate_trade_levels(df_monthly, cmp)
 
         # Score based on quality of alignment
         score = 0.0
@@ -634,7 +685,9 @@ def scan_monthly_momentum(symbol: str, df_monthly: pd.DataFrame, market_cap_cr: 
             f"Monthly EMA Stack (EMA8 > EMA12 > EMA20) confirmed bullish alignment. "
             f"ROC(6M) = {roc6:.1f}% (healthy momentum), RSI(14M) = {rsi_val:.1f} (non-overbought). "
             f"Volume breakout above 12M SMA confirms institutional participation. "
-            f"Buy near ₹{buy_price:.2f}, stop at monthly low ₹{exit_price:.2f}, target ₹{target_price:.2f} (+20%)."
+            f"Buy Range: [₹{buy_price:.2f} to ₹{cmp:.2f}] (Nearest Support is ₹{support:.2f}). "
+            f"Set stop loss securely below support at ₹{exit_price:.2f} "
+            f"with a target near overhead resistance at ₹{target_price:.2f}."
         )
         recommendation = compute_rich_analysis(df_monthly, symbol, "Monthly EMA Momentum", base_rec)
 
@@ -747,10 +800,7 @@ def scan_weekly_momentum(symbol: str, df_weekly: pd.DataFrame, market_cap_cr: fl
             return None
 
         # ---- All conditions passed — trade setup ----
-        buy_price    = round(cmp, 2)
-        last_low     = float(low.iloc[-1])
-        exit_price   = round(min(last_low * 0.98, cmp * 0.95), 2)
-        target_price = round(cmp * 1.15, 2)
+        buy_price, exit_price, target_price, support, resistance = calculate_trade_levels(df_weekly, cmp)
 
         # 1-Month Return calculation (from 4 weeks ago)
         close_4w_ago = float(close.iloc[-5]) if len(close) >= 5 else float(close.iloc[0])
@@ -792,7 +842,9 @@ def scan_weekly_momentum(symbol: str, df_weekly: pd.DataFrame, market_cap_cr: fl
             f"Volume {vol_ratio:.2f}x 20W avg confirms institutional participation. "
             f"RSI(14W)={rsi_val:.1f}, CCI(20W)={cci_val:.1f} — strong bullish momentum. "
             f"Open (₹{curr_open:.2f}) > Last Week Close (₹{prev_close:.2f}) = gap-up continuation. "
-            f"Buy ₹{buy_price:.2f} | Stop ₹{exit_price:.2f} | Target ₹{target_price:.2f} (+15%)."
+            f"Buy Range: [₹{buy_price:.2f} to ₹{cmp:.2f}] (Nearest Support is ₹{support:.2f}). "
+            f"Set stop loss securely below support at ₹{exit_price:.2f} "
+            f"with a target near overhead resistance at ₹{target_price:.2f}."
         )
         recommendation = compute_rich_analysis(df_weekly, symbol, "Weekly Momentum Breakout", base_rec)
 
@@ -1063,16 +1115,20 @@ def scan_vcs(symbol: str, df: pd.DataFrame, lenShort=13, lenLong=63, lenVol=50, 
             yesterday = df_copy.iloc[-2] if len(df_copy) >= 2 else today
             day_change_pct = ((today['Close'] - yesterday['Close']) / yesterday['Close'] * 100) if len(df_copy) >= 2 else 0.0
             
-            buy_price = round(float(today['Close']), 2)
-            exit_price = round(buy_price * 0.95, 2)
-            target_price = round(buy_price * 1.15, 2)
+            cmp = float(today['Close'])
+            buy_price, exit_price, target_price, support, resistance = calculate_trade_levels(df_copy, cmp, indicators)
             
             from config import get_company_name
             company_name = get_company_name(symbol)
             
             confidence = "High" if today_score < 5 else "Medium"
             
-            base_rec = f"VCS final score is {today_score:.2f} (below {max_score}), indicating strict setup conditions met. Buy near ₹{buy_price:.2f}, SL ₹{exit_price:.2f}, Target ₹{target_price:.2f}."
+            base_rec = (
+                f"VCS final score is {today_score:.2f} (below {max_score}), indicating strict setup conditions met. "
+                f"Buy Range: [₹{buy_price:.2f} to ₹{cmp:.2f}] (Nearest Support is ₹{support:.2f}). "
+                f"Set stop loss securely below support at ₹{exit_price:.2f} "
+                f"with a target near overhead resistance at ₹{target_price:.2f}."
+            )
             recommendation = compute_rich_analysis(df_copy, symbol, "VCS Setup", base_rec, indicators=indicators)
 
             return {
@@ -1162,9 +1218,7 @@ def scan_monthly_early_stage2(symbol: str, df_monthly: pd.DataFrame, max_run_up_
         # Base recommendation
         day_change_pct = ((cmp - float(prev['Close'])) / float(prev['Close']) * 100) if len(df_copy) >= 2 else 0.0
         
-        buy_price = round(cmp, 2)
-        exit_price = round(base_bottom * 0.95, 2) # Stop below base bottom
-        target_price = round(buy_price * 1.30, 2) # 30% target for Stage 2 breakout
+        buy_price, exit_price, target_price, support, resistance = calculate_trade_levels(df_copy, cmp)
         
         score = 100.0 - (extension_from_sma * 2.0) # Lower extension = higher score
         score = round(max(0, min(100.0, score)), 1)
@@ -1172,10 +1226,12 @@ def scan_monthly_early_stage2(symbol: str, df_monthly: pd.DataFrame, max_run_up_
         confidence = "High" if score >= 80 else "Medium-High"
         
         base_rec = (
-            f"Early Stage 2 Base Breakout detected on Monthly timeframe! "
+            f"Early Stage 2 Base Breakout! "
             f"Stock formed a base at ₹{base_bottom:.2f} and is up {extension_from_sma:.1f}% from the 7-month SMA. "
             f"It has now crossed the 7-Month SMA (₹{sma7:.2f}) with bullish monthly candles. "
-            f"Buy around ₹{buy_price:.2f}, SL below base ₹{exit_price:.2f}, target ₹{target_price:.2f}."
+            f"Buy Range: [₹{buy_price:.2f} to ₹{cmp:.2f}] (Nearest Support is ₹{support:.2f}). "
+            f"Set stop loss securely below support at ₹{exit_price:.2f} "
+            f"with a target near overhead resistance at ₹{target_price:.2f}."
         )
         
         # Calculate RSI and CCI for display
@@ -1459,15 +1515,17 @@ def scan_structural_vcp(symbol: str, df: pd.DataFrame, lookback: int = 120, pivo
         
         score = round((1.0 - (vol_5d_avg / vol_50d_avg)) * 100, 1)
         
-        buy_price = round(cmp, 2)
-        exit_price = round(cmp * 0.95, 2)
-        target_price = round(pivot_price * 1.15, 2)
+        buy_price, exit_price, target_price, support, resistance = calculate_trade_levels(df, cmp, indicators)
         confidence = "High" if len(valid_minima) >= 3 and depths[-1] < 0.05 else "Medium"
         
-        base_rec = f"Structural VCP found! Pivot resistance at ₹{pivot_price:.2f}. " \
-                   f"Formed {len(valid_minima)} contractions. " \
-                   f"Volume dried up to {vol_5d_avg/vol_50d_avg*100:.0f}% of 50d avg. " \
-                   f"Buy near ₹{buy_price:.2f}, SL ₹{exit_price:.2f}, Target ₹{target_price:.2f}."
+        base_rec = (
+            f"Structural VCP found! Pivot resistance at ₹{pivot_price:.2f}. "
+            f"Formed {len(valid_minima)} contractions. "
+            f"Volume dried up to {vol_5d_avg/vol_50d_avg*100:.0f}% of 50d avg. "
+            f"Buy Range: [₹{buy_price:.2f} to ₹{cmp:.2f}] (Nearest Support is ₹{support:.2f}). "
+            f"Set stop loss securely below support at ₹{exit_price:.2f} "
+            f"with a target near overhead resistance at ₹{target_price:.2f}."
+        )
         
         recommendation = compute_rich_analysis(df, symbol, "Structural VCP", base_rec, indicators=indicators)
             
