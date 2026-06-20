@@ -5229,7 +5229,7 @@ with tab_vol_profile:
                 from vdu_scanner.scanner import scan_volume_profile
                 
                 def _scan_vp(symbol):
-                    df = fetch_ohlcv(symbol, period='2y')
+                    df = fetch_ohlcv_timeframe(symbol, period='2y')
                     mc = market_caps.get(symbol, 0)
                     if df is not None and len(df) >= 100:
                         return scan_volume_profile(symbol, df, mc)
