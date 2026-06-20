@@ -72,6 +72,7 @@ def run_background_ai_scan(symbols_list, date_str, force=False):
         # Exclude already processed items to speed up background process
         # Bulk query existing patterns to prevent N+1 DB lookups
         existing_patterns = {} if force else database.get_all_patterns_by_date(date_str)
+        to_scan = []
         
         for s in symbols_list:
             if force:
