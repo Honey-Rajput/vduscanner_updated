@@ -1919,14 +1919,15 @@ if st.sidebar.button("🔍 Run Scanner", width="stretch"):
         def process_and_fetch_if_needed(sym, df, *args):
             try:
                 if df is None:
-                    df = fetch_ohlcv(sym)
+                    # Bypass st.cache_data to avoid Thread '...' requires a context error in joblib workers
+                    df = fetch_ohlcv.__wrapped__(sym)
                 return process_single_symbol(sym, df, *args)
             except Exception as e:
                 print(f"Internal error processing {sym}: {e}")
                 return {"failed": True, "error": str(e)}
 
         n_workers = min(32, os.cpu_count() * 2 if os.cpu_count() else 8)
-        generator = joblib.Parallel(n_jobs=n_workers, return_as="generator_unordered")(
+        generator = joblib.Parallel(n_jobs=n_workers, backend="threading", return_as="generator_unordered")(
             joblib.delayed(process_and_fetch_if_needed)(
                 sym, bulk_data.get(sym.strip().upper()), open_price_map, close_price_map, high_price_map, low_price_map, volume_map, min_dry, max_dry, min_vol_ratio, min_price_chg, min_dry_spikes, min_signal_str, above_50dma_only, above_200dma_only, vcp_max_tightness
             ) for sym in scan_symbols
