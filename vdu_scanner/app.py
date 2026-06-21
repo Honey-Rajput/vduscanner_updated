@@ -1458,7 +1458,7 @@ st.sidebar.markdown('---')
 
 
 # --- RUN SCAN ACTION ---
-if st.sidebar.button("🔍 Run Scanner", use_container_width=True):
+if st.sidebar.button("🔍 Run Scanner", width="stretch"):
     # Resolve the universe selected in the sidebar
     if "NIFTY 50" in universe_selection:
         universe_key = "NIFTY 50"
@@ -2397,7 +2397,7 @@ with tab_detail:
                     height=600
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
                 st.markdown("---")
 
@@ -2453,7 +2453,7 @@ with tab_detail:
                 )
 
                 with c3:
-                    st.plotly_chart(gauge_fig, use_container_width=True)
+                    st.plotly_chart(gauge_fig, width="stretch")
 
                     # DMA Flag badge
                     dma_status = above_50dma
@@ -2561,7 +2561,7 @@ with tab_watchlist:
         edited_table = st.data_editor(
             display_df,
             column_config=config_table,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             key="watchlist_editor_grid"
         )
@@ -2592,7 +2592,7 @@ with tab_watchlist:
             )
             
             if ticker_to_delete:
-                del_clicked = c_del2.button("Remove Ticker", type="secondary", key="del_action", use_container_width=True)
+                del_clicked = c_del2.button("Remove Ticker", type="secondary", key="del_action", width="stretch")
                 if del_clicked:
                     watchlist.remove_stock(ticker_to_delete)
                     st.toast(f"Removed {ticker_to_delete} from your watchlist.")
@@ -2609,12 +2609,12 @@ with tab_watchlist:
                 data=watchlist_csv_bytes,
                 file_name=f"vdu_watchlist_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d')}.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
                 key="dl_watchlist"
             )
             
             # Clear all database
-            clear_btn = st.button("🗑️ Clear Entire Watchlist", type="secondary", use_container_width=True, key="clear_watchlist_btn")
+            clear_btn = st.button("🗑️ Clear Entire Watchlist", type="secondary", width="stretch", key="clear_watchlist_btn")
             if clear_btn:
                 st.session_state.confirm_clear = True
                 
@@ -2622,7 +2622,7 @@ with tab_watchlist:
                 st.markdown("<p style='color:#ef4444; font-weight:600;'>⚠️ Are you absolutely sure? This deletes watchlist.csv entries forever.</p>", unsafe_allow_html=True)
                 col_yes, col_no = st.columns(2)
                 
-                if col_yes.button("Yes, Clear All", type="primary", use_container_width=True, key="clr_yes"):
+                if col_yes.button("Yes, Clear All", type="primary", width="stretch", key="clr_yes"):
                     # Clear CSV
                     empty_df = pd.DataFrame(columns=watchlist.COLUMNS)
                     watchlist.save_watchlist(empty_df)
@@ -2630,7 +2630,7 @@ with tab_watchlist:
                     st.toast("🗑️ Watchlist fully cleared.")
                     st.rerun()
                     
-                if col_no.button("Cancel", use_container_width=True, key="clr_no"):
+                if col_no.button("Cancel", width="stretch", key="clr_no"):
                     st.session_state.confirm_clear = False
                     st.rerun()
 
@@ -2907,7 +2907,7 @@ with tab_ai:
                                 'font': {'size': 14, 'family': 'Outfit', 'color': '#29b6f6'}
                             }
                         )
-                        st.plotly_chart(fig_ai, use_container_width=True)
+                        st.plotly_chart(fig_ai, width="stretch")
 
     # ==========================================================================
     # BATCH AI DASHBOARD FOR FLAGGED STOCKS
@@ -2979,7 +2979,7 @@ with tab_ai:
                 unsafe_allow_html=True
             )
             # Add dynamic refresh button
-            if st.button("🔄 Refresh progressive AI results", key="refresh_ai_background_scan_results", use_container_width=True):
+            if st.button("🔄 Refresh progressive AI results", key="refresh_ai_background_scan_results", width="stretch"):
                 st.rerun()
         else:
             # Batch Scan Control Buttons
@@ -2988,10 +2988,10 @@ with tab_ai:
             btn_force_batch_scan = False
             
             if unscanned_count > 0:
-                btn_batch_scan = btn_cols[0].button(f"🤖 Trigger Background AI Scan ({unscanned_count} Pending)", key="batch_ai_scan_action_btn", use_container_width=True)
+                btn_batch_scan = btn_cols[0].button(f"🤖 Trigger Background AI Scan ({unscanned_count} Pending)", key="batch_ai_scan_action_btn", width="stretch")
                 
             if len(active_flagged_symbols) > 0:
-                btn_force_batch_scan = btn_cols[1].button(f"🔄 Force Re-scan All ({len(active_flagged_symbols)} Flagged Candidates)", key="force_batch_ai_scan_action_btn", use_container_width=True)
+                btn_force_batch_scan = btn_cols[1].button(f"🔄 Force Re-scan All ({len(active_flagged_symbols)} Flagged Candidates)", key="force_batch_ai_scan_action_btn", width="stretch")
                 
             if btn_batch_scan or btn_force_batch_scan:
                 to_scan_list = []
@@ -3115,7 +3115,7 @@ with tab_ai:
             def set_ai_selection(s=sym):
                 st.session_state.ai_selected_stock = s
                 
-            if row_cols[6].button("🔍 View", key=action_key, use_container_width=True, on_click=set_ai_selection):
+            if row_cols[6].button("🔍 View", key=action_key, width="stretch", on_click=set_ai_selection):
                 st.toast(f"🔍 Loading detailed charts & AI context for {sym}...")
                 
             st.markdown("<hr style='margin: 4px 0; border-color: rgba(255,255,255,0.03);'>", unsafe_allow_html=True)
@@ -3173,7 +3173,7 @@ with tab_ai:
             def set_cached_ai_selection(s=rec['symbol']):
                 st.session_state.ai_selected_stock = s
                 
-            if row_cols[5].button("⚡ Load", key=f"load_rec_{rec['symbol']}_{idx}", use_container_width=True, on_click=set_cached_ai_selection):
+            if row_cols[5].button("⚡ Load", key=f"load_rec_{rec['symbol']}_{idx}", width="stretch", on_click=set_cached_ai_selection):
                 st.toast(f"Loading cached analysis for {rec['symbol']}!")
                 
             st.markdown("<hr style='margin: 4px 0; border-color: rgba(255,255,255,0.03);'>", unsafe_allow_html=True)
@@ -3431,7 +3431,7 @@ with tab_wave:
     if 'wt_results_by_tf' not in st.session_state:
         st.session_state.wt_results_by_tf = {}
         
-    run_wt_btn = st.button("🌊 Run Advanced WaveTrend Scan", key="run_wt_scan_btn", use_container_width=True)
+    run_wt_btn = st.button("🌊 Run Advanced WaveTrend Scan", key="run_wt_scan_btn", width="stretch")
     
     if run_wt_btn:
         # Resolve the universe selected in the global sidebar
@@ -3994,7 +3994,7 @@ with tab_monthly:
     # --- Run Scan Button ---
     mm_col1, mm_col2 = st.columns([1, 3])
     with mm_col1:
-        run_mm_scan = st.button("🔍 Run Monthly Momentum Scan", use_container_width=True, key="run_monthly_mom_btn")
+        run_mm_scan = st.button("🔍 Run Monthly Momentum Scan", width="stretch", key="run_monthly_mom_btn")
     with mm_col2:
         st.info("⏱️ This scan downloads ~5 years of **monthly** data for all NSE stocks. It may take 3–8 minutes for All NSE universe. Use Nifty 500 for faster results.")
 
@@ -4318,7 +4318,7 @@ with tab_weekly:
 
     wm_col1, wm_col2 = st.columns([1, 3])
     with wm_col1:
-        run_wm_scan = st.button("🔍 Run Weekly Momentum Scan", use_container_width=True, key="run_weekly_mom_btn")
+        run_wm_scan = st.button("🔍 Run Weekly Momentum Scan", width="stretch", key="run_weekly_mom_btn")
     with wm_col2:
         st.info("⏱️ Downloads weekly OHLCV data for all NSE stocks with MCap ≥ ₹5000 Cr. Typical run: **2–5 minutes**.")
 
@@ -4664,7 +4664,7 @@ with tab_vcs:
     with col7:
         vcs_max_score = st.number_input("Max Score Limit", min_value=1.0, max_value=100.0, value=10.0, step=1.0)
         
-    run_vcs_btn = st.button("🔍 Run Custom VCS Scan", use_container_width=True, type="primary")
+    run_vcs_btn = st.button("🔍 Run Custom VCS Scan", width="stretch", type="primary")
     
     if run_vcs_btn:
         vcs_interval = "1wk" if "Weekly" in vcs_timeframe else "1d"
@@ -4756,7 +4756,7 @@ with tab_vcs:
                 data=csv_data,
                 file_name="vcs_scan_results.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         render_unified_strategy_table(st.session_state.vcs_results, "vcs", "vcs_tab")
 
@@ -4790,7 +4790,7 @@ with tab_vcp:
                 data=sv_csv,
                 file_name="structural_vcp_results.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
             
         render_unified_strategy_table(st.session_state.structural_vcp_results, "struct_vcp", "struct_vcp_tab")
@@ -4817,7 +4817,7 @@ with tab_stage2:
     s2_col1, s2_col2 = st.columns([2, 8])
     with s2_col1:
         s2_max_runup = st.number_input("Max Run-Up (%)", min_value=5.0, max_value=50.0, value=20.0, step=1.0)
-        run_stage2_btn = st.button("🔍 Run Stage 2 Scan", use_container_width=True, type="primary")
+        run_stage2_btn = st.button("🔍 Run Stage 2 Scan", width="stretch", type="primary")
         
     if run_stage2_btn:
         with st.spinner(f"Running Monthly Stage 2 Scan on {universe_selection}..."):
@@ -4919,7 +4919,7 @@ with tab_stage2:
                 data=csv_data,
                 file_name="stage2_scan_results.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         render_unified_strategy_table(st.session_state.stage2_results, "stage2", "stage2_tab")
 
@@ -4934,7 +4934,7 @@ with tab_vpa:
     
     col1, col2 = st.columns([3, 7])
     with col1:
-        run_vpa_btn = st.button("🚀 Run Advanced VPA Scan", use_container_width=True)
+        run_vpa_btn = st.button("🚀 Run Advanced VPA Scan", width="stretch")
     
     if run_vpa_btn:
         st.session_state.vpa_results = []
@@ -5147,7 +5147,7 @@ with tab_vpa:
                 data=pd.DataFrame(daily_export).to_csv(index=False).encode('utf-8-sig'),
                 file_name="vpa_daily_trend.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         with col2:
             st.download_button(
@@ -5155,7 +5155,7 @@ with tab_vpa:
                 data=pd.DataFrame(weekly_export).to_csv(index=False).encode('utf-8-sig'),
                 file_name="vpa_weekly_trend.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         with col3:
             st.download_button(
@@ -5163,7 +5163,7 @@ with tab_vpa:
                 data=pd.DataFrame(monthly_export).to_csv(index=False).encode('utf-8-sig'),
                 file_name="vpa_monthly_trend.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         
         # Interactive Timeframe Selection
@@ -5275,7 +5275,7 @@ with tab_volprofile:
     
     col1, col2 = st.columns([3, 7])
     with col1:
-        run_vp_btn = st.button("🚀 Run Advanced Volume Profile Scan", use_container_width=True)
+        run_vp_btn = st.button("🚀 Run Advanced Volume Profile Scan", width="stretch")
     
     if run_vp_btn:
         st.session_state.vp_results = []
@@ -5461,7 +5461,7 @@ with tab_volprofile:
         tab_all, tab_daily, tab_weekly, tab_monthly = st.tabs(["📊 All Stocks", "📅 Daily", "📅 Weekly", "📅 Monthly"])
         
         with tab_all:
-            st.dataframe(df_vp, use_container_width=True, hide_index=True)
+            st.dataframe(df_vp, width="stretch", hide_index=True)
             csv_all = df_vp.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label="📥 Download All Stocks (CSV)",
@@ -5479,7 +5479,7 @@ with tab_volprofile:
             buy_daily = df_daily[df_daily['D Zone'] == '✅ Can Buy (Near Support)']
             st.markdown(f"**{len(buy_daily)}** stocks in Daily Buy Zone | **{len(df_daily)}** total with daily data")
             st.caption("💡 **Buy Range (VAL)** = Support level to buy near | **Target (POC)** = High-volume fair value | **Resistance (VAH)** = Upper boundary")
-            st.dataframe(df_daily, use_container_width=True, hide_index=True)
+            st.dataframe(df_daily, width="stretch", hide_index=True)
             csv_daily = df_daily.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label="📥 Download Daily Timeframe (CSV)",
@@ -5497,7 +5497,7 @@ with tab_volprofile:
             buy_weekly = df_weekly[df_weekly['W Zone'] == '✅ Can Buy (Near Support)']
             st.markdown(f"**{len(buy_weekly)}** stocks in Weekly Buy Zone | **{len(df_weekly)}** total with weekly data")
             st.caption("💡 **Buy Range (VAL)** = Support level to buy near | **Target (POC)** = High-volume fair value | **Resistance (VAH)** = Upper boundary")
-            st.dataframe(df_weekly, use_container_width=True, hide_index=True)
+            st.dataframe(df_weekly, width="stretch", hide_index=True)
             csv_weekly = df_weekly.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label="📥 Download Weekly Timeframe (CSV)",
@@ -5515,7 +5515,7 @@ with tab_volprofile:
             buy_monthly = df_monthly[df_monthly['M Zone'] == '✅ Can Buy (Near Support)']
             st.markdown(f"**{len(buy_monthly)}** stocks in Monthly Buy Zone | **{len(df_monthly)}** total with monthly data")
             st.caption("💡 **Buy Range (VAL)** = Support level to buy near | **Target (POC)** = High-volume fair value | **Resistance (VAH)** = Upper boundary")
-            st.dataframe(df_monthly, use_container_width=True, hide_index=True)
+            st.dataframe(df_monthly, width="stretch", hide_index=True)
             csv_monthly = df_monthly.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label="📥 Download Monthly Timeframe (CSV)",

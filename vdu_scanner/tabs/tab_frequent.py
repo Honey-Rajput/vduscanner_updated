@@ -49,7 +49,7 @@ def render():
     
     st.dataframe(
         display_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=600
     )
@@ -61,7 +61,7 @@ def render():
         data=csv_data,
         file_name="consistent_alerts.csv",
         mime="text/csv",
-        use_container_width=False
+        width="content"
     )
     
     st.write("---")
