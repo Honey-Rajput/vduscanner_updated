@@ -1733,15 +1733,24 @@ if st.sidebar.button("🔍 Run Scanner", width="stretch"):
             if last_df_date < today_date:
                 sym_clean = sym.strip().upper()
                 if sym_clean in open_price_map and sym_clean in close_price_map:
-                    new_row = {
-                        'Date': pd.to_datetime(today_date),
-                        'Open': open_price_map[sym_clean],
-                        'High': high_price_map.get(sym_clean, close_price_map[sym_clean]),
-                        'Low': low_price_map.get(sym_clean, close_price_map[sym_clean]),
-                        'Close': close_price_map[sym_clean],
-                        'Volume': volume_map.get(sym_clean, 0)
-                    }
-                    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                    live_close = close_price_map[sym_clean]
+                    live_vol = volume_map.get(sym_clean, 0)
+                    last_hist_close = df['Close'].iloc[-1]
+                    last_hist_vol = df['Volume'].iloc[-1]
+                    
+                    # Prevent appending weekend/holiday duplicate candles.
+                    # If the 1d "live" quote from yfinance exactly matches the last historical candle's
+                    # close and volume, it means the market is closed and no new data exists for today.
+                    if not (live_close == last_hist_close and live_vol == last_hist_vol):
+                        new_row = {
+                            'Date': pd.to_datetime(today_date),
+                            'Open': open_price_map[sym_clean],
+                            'High': high_price_map.get(sym_clean, close_price_map[sym_clean]),
+                            'Low': low_price_map.get(sym_clean, close_price_map[sym_clean]),
+                            'Close': close_price_map[sym_clean],
+                            'Volume': volume_map.get(sym_clean, 0)
+                        }
+                        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                 
             today_close_val = df['Close'].iloc[-1]
             if today_close_val <= 200.0:
