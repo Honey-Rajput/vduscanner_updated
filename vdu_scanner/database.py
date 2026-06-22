@@ -367,6 +367,17 @@ def init_db() -> bool:
             "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS monthly_rsi DOUBLE PRECISION;",
             "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS monthly_cci DOUBLE PRECISION;",
             
+            # VPA raw RWI value columns for action signal logic
+            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS daily_major_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS daily_mid_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS daily_minor_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS weekly_major_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS weekly_mid_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS weekly_minor_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS monthly_major_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS monthly_mid_val DOUBLE PRECISION;",
+            "ALTER TABLE scanned_vpa ADD COLUMN IF NOT EXISTS monthly_minor_val DOUBLE PRECISION;",
+            
             # Volume Profile level columns (POC, VAL, VAH per timeframe)
             "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS daily_poc DOUBLE PRECISION;",
             "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS daily_val DOUBLE PRECISION;",
@@ -776,8 +787,11 @@ def get_cached_vpa(date_str: str) -> list[dict]:
     query = """
     SELECT symbol, company_name, cmp, day_change_pct, volume, vpa_score,
            daily_major, daily_mid, daily_minor, daily_rsi, daily_cci,
+           daily_major_val, daily_mid_val, daily_minor_val,
            weekly_major, weekly_mid, weekly_minor, weekly_rsi, weekly_cci,
+           weekly_major_val, weekly_mid_val, weekly_minor_val,
            monthly_major, monthly_mid, monthly_minor, monthly_rsi, monthly_cci,
+           monthly_major_val, monthly_mid_val, monthly_minor_val,
            scan_date
     FROM scanned_vpa
     WHERE scan_date = %s;
@@ -801,21 +815,30 @@ def get_cached_vpa(date_str: str) -> list[dict]:
                 "mid": int(r_dict.get('daily_mid') or 0),
                 "minor": int(r_dict.get('daily_minor') or 0),
                 "rsi": float(r_dict.get('daily_rsi') or 0.0),
-                "cci": float(r_dict.get('daily_cci') or 0.0)
+                "cci": float(r_dict.get('daily_cci') or 0.0),
+                "major_val": float(r_dict.get('daily_major_val') or 0.0),
+                "mid_val": float(r_dict.get('daily_mid_val') or 0.0),
+                "minor_val": float(r_dict.get('daily_minor_val') or 0.0)
             }
             r_dict['weekly'] = {
                 "major": int(r_dict.get('weekly_major') or 0),
                 "mid": int(r_dict.get('weekly_mid') or 0),
                 "minor": int(r_dict.get('weekly_minor') or 0),
                 "rsi": float(r_dict.get('weekly_rsi') or 0.0),
-                "cci": float(r_dict.get('weekly_cci') or 0.0)
+                "cci": float(r_dict.get('weekly_cci') or 0.0),
+                "major_val": float(r_dict.get('weekly_major_val') or 0.0),
+                "mid_val": float(r_dict.get('weekly_mid_val') or 0.0),
+                "minor_val": float(r_dict.get('weekly_minor_val') or 0.0)
             }
             r_dict['monthly'] = {
                 "major": int(r_dict.get('monthly_major') or 0),
                 "mid": int(r_dict.get('monthly_mid') or 0),
                 "minor": int(r_dict.get('monthly_minor') or 0),
                 "rsi": float(r_dict.get('monthly_rsi') or 0.0),
-                "cci": float(r_dict.get('monthly_cci') or 0.0)
+                "cci": float(r_dict.get('monthly_cci') or 0.0),
+                "major_val": float(r_dict.get('monthly_major_val') or 0.0),
+                "mid_val": float(r_dict.get('monthly_mid_val') or 0.0),
+                "minor_val": float(r_dict.get('monthly_minor_val') or 0.0)
             }
             results.append(r_dict)
     except Exception as e:
@@ -877,9 +900,13 @@ def save_vpa_only(date_str: str, vpa_results: list[dict]) -> bool:
         insert_vpa_query = """
         INSERT INTO scanned_vpa (symbol, company_name, cmp, day_change_pct, volume, vpa_score, 
                                  daily_major, daily_mid, daily_minor, daily_rsi, daily_cci,
+                                 daily_major_val, daily_mid_val, daily_minor_val,
                                  weekly_major, weekly_mid, weekly_minor, weekly_rsi, weekly_cci,
-                                 monthly_major, monthly_mid, monthly_minor, monthly_rsi, monthly_cci, scan_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                 weekly_major_val, weekly_mid_val, weekly_minor_val,
+                                 monthly_major, monthly_mid, monthly_minor, monthly_rsi, monthly_cci,
+                                 monthly_major_val, monthly_mid_val, monthly_minor_val,
+                                 scan_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in vpa_results:
             cur.execute(insert_vpa_query, (
@@ -894,16 +921,25 @@ def save_vpa_only(date_str: str, vpa_results: list[dict]) -> bool:
                 int(r.get('daily', {}).get('minor', 0)),
                 float(r.get('daily', {}).get('rsi', 0.0)),
                 float(r.get('daily', {}).get('cci', 0.0)),
+                float(r.get('daily', {}).get('major_val', 0.0)),
+                float(r.get('daily', {}).get('mid_val', 0.0)),
+                float(r.get('daily', {}).get('minor_val', 0.0)),
                 int(r.get('weekly', {}).get('major', 0)),
                 int(r.get('weekly', {}).get('mid', 0)),
                 int(r.get('weekly', {}).get('minor', 0)),
                 float(r.get('weekly', {}).get('rsi', 0.0)),
                 float(r.get('weekly', {}).get('cci', 0.0)),
+                float(r.get('weekly', {}).get('major_val', 0.0)),
+                float(r.get('weekly', {}).get('mid_val', 0.0)),
+                float(r.get('weekly', {}).get('minor_val', 0.0)),
                 int(r.get('monthly', {}).get('major', 0)),
                 int(r.get('monthly', {}).get('mid', 0)),
                 int(r.get('monthly', {}).get('minor', 0)),
                 float(r.get('monthly', {}).get('rsi', 0.0)),
                 float(r.get('monthly', {}).get('cci', 0.0)),
+                float(r.get('monthly', {}).get('major_val', 0.0)),
+                float(r.get('monthly', {}).get('mid_val', 0.0)),
+                float(r.get('monthly', {}).get('minor_val', 0.0)),
                 date_str
             ))
         conn.commit()
@@ -1324,9 +1360,13 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         insert_vpa_query = """
         INSERT INTO scanned_vpa (symbol, company_name, cmp, day_change_pct, volume, vpa_score, 
                                  daily_major, daily_mid, daily_minor, daily_rsi, daily_cci,
+                                 daily_major_val, daily_mid_val, daily_minor_val,
                                  weekly_major, weekly_mid, weekly_minor, weekly_rsi, weekly_cci,
-                                 monthly_major, monthly_mid, monthly_minor, monthly_rsi, monthly_cci, scan_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                                 weekly_major_val, weekly_mid_val, weekly_minor_val,
+                                 monthly_major, monthly_mid, monthly_minor, monthly_rsi, monthly_cci,
+                                 monthly_major_val, monthly_mid_val, monthly_minor_val,
+                                 scan_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         for r in vpa_results:
             cur.execute(insert_vpa_query, (
@@ -1341,16 +1381,25 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
                 int(r.get('daily', {}).get('minor', 0)),
                 float(r.get('daily', {}).get('rsi', 0.0)),
                 float(r.get('daily', {}).get('cci', 0.0)),
+                float(r.get('daily', {}).get('major_val', 0.0)),
+                float(r.get('daily', {}).get('mid_val', 0.0)),
+                float(r.get('daily', {}).get('minor_val', 0.0)),
                 int(r.get('weekly', {}).get('major', 0)),
                 int(r.get('weekly', {}).get('mid', 0)),
                 int(r.get('weekly', {}).get('minor', 0)),
                 float(r.get('weekly', {}).get('rsi', 0.0)),
                 float(r.get('weekly', {}).get('cci', 0.0)),
+                float(r.get('weekly', {}).get('major_val', 0.0)),
+                float(r.get('weekly', {}).get('mid_val', 0.0)),
+                float(r.get('weekly', {}).get('minor_val', 0.0)),
                 int(r.get('monthly', {}).get('major', 0)),
                 int(r.get('monthly', {}).get('mid', 0)),
                 int(r.get('monthly', {}).get('minor', 0)),
                 float(r.get('monthly', {}).get('rsi', 0.0)),
                 float(r.get('monthly', {}).get('cci', 0.0)),
+                float(r.get('monthly', {}).get('major_val', 0.0)),
+                float(r.get('monthly', {}).get('mid_val', 0.0)),
+                float(r.get('monthly', {}).get('minor_val', 0.0)),
                 date_str
             ))
             
