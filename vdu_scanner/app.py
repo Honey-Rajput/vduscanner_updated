@@ -26,6 +26,8 @@ def get_market_date():
 import watchlist
 from utils import inject_premium_css, get_signal_badge_html, get_day_change_badge_html
 import database
+import importlib
+importlib.reload(database)
 import ai_detector
 import re
 import threading
