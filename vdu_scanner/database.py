@@ -1687,8 +1687,22 @@ def get_frequent_stocks(days_lookback: int = 15) -> list[dict]:
     over the last N distinct scan dates.
     """
     query = """
-    WITH recent_dates AS (
-        SELECT DISTINCT scan_date FROM scan_logs ORDER BY scan_date DESC LIMIT %s
+    WITH all_dates AS (
+        SELECT scan_date FROM scan_logs
+        UNION SELECT scan_date FROM scanned_breakouts
+        UNION SELECT scan_date FROM scanned_trend_setups
+        UNION SELECT scan_date FROM scanned_monthly_momentum
+        UNION SELECT scan_date FROM scanned_vcs
+        UNION SELECT scan_date FROM scanned_stage2
+        UNION SELECT scan_date FROM scanned_gapups
+        UNION SELECT scan_date FROM scanned_wt_cross
+        UNION SELECT scan_date FROM scanned_vpa
+        UNION SELECT scan_date FROM scanned_volume_profile
+        UNION SELECT scan_date FROM scanned_support_rsi
+        UNION SELECT scan_date FROM scanned_weekly_momentum
+    ),
+    recent_dates AS (
+        SELECT DISTINCT scan_date FROM all_dates ORDER BY scan_date DESC LIMIT %s
     ),
     all_scans AS (
         SELECT symbol, scan_date, 'VDU Breakout' as source FROM scanned_breakouts WHERE scan_date IN (SELECT scan_date FROM recent_dates)
