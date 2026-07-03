@@ -14,8 +14,8 @@ def calculate_trade_levels(df: pd.DataFrame, cmp: float, indicators: dict = None
         
         # 20-day and 50-day SMA Support
         if indicators and 'sma20' in indicators and 'sma50' in indicators:
-            sma20 = float(indicators['sma20'].iloc[-1])
-            sma50 = float(indicators['sma50'].iloc[-1])
+            sma20 = float(indicators['sma20']) if indicators['sma20'] is not None else float(df['Close'].rolling(20).mean().iloc[-1])
+            sma50 = float(indicators['sma50']) if indicators['sma50'] is not None else float(df['Close'].rolling(50).mean().iloc[-1])
             if sma20 < cmp: support_candidates.append(sma20)
             if sma50 < cmp: support_candidates.append(sma50)
         else:

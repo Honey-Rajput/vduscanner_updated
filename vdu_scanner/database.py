@@ -882,10 +882,11 @@ def save_vcs_only(date_str: str, vcs_results: list[dict]) -> bool:
         cur.close()
         return True
     except Exception as e:
-        if conn:
-            conn.close()
         print(f"Error saving VCS only: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def save_vpa_only(date_str: str, vpa_results: list[dict]) -> bool:
     """
@@ -946,10 +947,11 @@ def save_vpa_only(date_str: str, vpa_results: list[dict]) -> bool:
         cur.close()
         return True
     except Exception as e:
-        if conn:
-            conn.close()
         print(f"Error saving VPA only: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def get_cached_stage2(date_str: str) -> list[dict]:
     """
@@ -1162,10 +1164,11 @@ def save_stage2_only(date_str: str, stage2_results: list[dict]) -> bool:
         cur.close()
         return True
     except Exception as e:
-        if conn:
-            conn.close()
         print(f"Error saving stage2 only: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict], gapups: list[dict], trend_setups: list[dict], wt_cross: list[dict], total_scanned: int, vcs_results: list[dict] = None, vpa_results: list[dict] = None) -> bool:
     """
@@ -1414,8 +1417,6 @@ def save_scan_results(date_str: str, breakouts: list[dict], squeezes: list[dict]
         print(f"Cached {len(breakouts)} breakouts, {len(squeezes)} squeezes, {len(gapups)} gapups, {len(trend_setups)} trend setups, {len(wt_cross)} WT Cross setups, {len(vcs_results)} VCS setups, and {len(vpa_results)} VPA setups in Neon for {date_str}.")
         return True
     except Exception as e:
-        if conn:
-            conn.close()
         print(f"Error saving daily scan results to PostgreSQL: {e}")
         return False
     finally:
@@ -1674,14 +1675,14 @@ def get_frequent_stocks(days_lookback: int = 15) -> list[dict]:
     ),
     aggregated AS (
         SELECT symbol, 
-               COUNT(*) as total_appearances, 
+               COUNT(DISTINCT scan_date) as total_appearances, 
                COUNT(DISTINCT scan_date) as days_appeared,
                MIN(scan_date) as first_seen_date, 
                MAX(scan_date) as last_seen_date,
                STRING_AGG(DISTINCT source, ', ') as strategies
         FROM all_scans
         GROUP BY symbol
-        HAVING COUNT(DISTINCT scan_date) > 1 OR COUNT(DISTINCT source) > 1
+        HAVING COUNT(DISTINCT scan_date) > 1
     )
     SELECT a.*, v.daily_rsi as rsi, v.daily_cci as cci
     FROM aggregated a
@@ -1711,6 +1712,73 @@ def get_frequent_stocks(days_lookback: int = 15) -> list[dict]:
             results.append(r_dict)
     except Exception as e:
         print(f"Error loading frequent stocks from database: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return results
+
+def get_wt_vp_confluence(date_str: str) -> list[dict]:
+    """
+    Returns stocks that have BOTH:
+      1. A WaveTrend buy signal (buy_signal = TRUE) on the given date
+      2. A Volume Profile daily zone of 'Can Buy (Near Support)' on the same date
+    Fetches from database by JOINing scanned_wt_cross and scanned_volume_profile.
+    """
+    query = """
+    SELECT
+        wt.symbol,
+        wt.company_name,
+        wt.cmp,
+        wt.day_change_pct,
+        wt.wt_value,
+        wt.wt2_value,
+        wt.wt_diff,
+        wt.above_20sma,
+        wt.above_50sma,
+        wt.above_200sma,
+        wt.volume,
+        wt.buy_price,
+        wt.exit_price,
+        wt.target_price,
+        wt.confidence,
+        wt.recommendation,
+        vp.daily_zone,
+        vp.daily_pos,
+        vp.daily_poc,
+        vp.daily_val,
+        vp.daily_vah
+    FROM scanned_wt_cross wt
+    INNER JOIN scanned_volume_profile vp
+        ON wt.symbol = vp.symbol AND wt.scan_date = vp.scan_date
+    WHERE wt.scan_date = %s
+      AND wt.buy_signal = TRUE
+      AND vp.daily_zone LIKE %s
+    ORDER BY wt.wt_value ASC;
+    """
+    conn = None
+    results = []
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(query, (date_str, '%Can Buy%'))
+        rows = cur.fetchall()
+        cur.close()
+        for r in rows:
+            r_dict = dict(r)
+            r_dict['wt_value'] = float(r_dict.get('wt_value') or 0.0)
+            r_dict['wt2_value'] = float(r_dict.get('wt2_value') or 0.0)
+            r_dict['wt_diff'] = float(r_dict.get('wt_diff') or 0.0)
+            r_dict['above_20sma'] = bool(r_dict.get('above_20sma', False))
+            r_dict['above_50sma'] = bool(r_dict.get('above_50sma', False))
+            r_dict['above_200sma'] = bool(r_dict.get('above_200sma', False))
+            r_dict['volume'] = int(r_dict.get('volume') or 0)
+            r_dict['daily_pos'] = float(r_dict.get('daily_pos') or 0.0)
+            r_dict['daily_poc'] = float(r_dict.get('daily_poc') or 0.0)
+            r_dict['daily_val'] = float(r_dict.get('daily_val') or 0.0)
+            r_dict['daily_vah'] = float(r_dict.get('daily_vah') or 0.0)
+            results.append(r_dict)
+    except Exception as e:
+        print(f"Error loading WT+VP confluence from database: {e}")
     finally:
         if conn:
             conn.close()

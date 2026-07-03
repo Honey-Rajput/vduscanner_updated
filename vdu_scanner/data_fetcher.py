@@ -271,8 +271,8 @@ def fetch_sector_map() -> dict:
         try:
             with open(map_path, "r") as f:
                 sector_map.update(json.load(f))
-        except:
-            pass
+        except Exception as e:
+            print(f"Warning: Failed to load sector_map.json: {e}")
 
     for url in urls:
         try:

@@ -2,20 +2,6 @@
 import streamlit as st
 import pandas as pd
 
-import pytz
-IST_TIMEZONE = pytz.timezone('Asia/Kolkata')
-
-def get_market_date():
-    from datetime import datetime, timedelta
-    today = datetime.now(IST_TIMEZONE)
-    if today.isoweekday() == 7:
-        return (today - timedelta(days=2)).strftime('%Y-%m-%d')
-    elif today.isoweekday() == 6:
-        return (today - timedelta(days=1)).strftime('%Y-%m-%d')
-    else:
-        return today.strftime('%Y-%m-%d')
-
-
 from datetime import datetime, timedelta
 import os
 import yfinance as yf
@@ -26,6 +12,16 @@ from config import IST_TIMEZONE, get_company_name, DRY_ZONE_MIN_DAYS, DRY_ZONE_M
 from data_fetcher import fetch_ohlcv, get_index_stocks, fetch_ohlcv_timeframe, get_stock_sector
 from scanner import scan_stock, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum, scan_vcs, scan_monthly_early_stage2, scan_vpa_trend, scan_structural_vcp
 from indicators import precompute_indicators
+
+def get_market_date():
+    today = datetime.now(IST_TIMEZONE)
+    if today.isoweekday() == 7:
+        return (today - timedelta(days=2)).strftime('%Y-%m-%d')
+    elif today.isoweekday() == 6:
+        return (today - timedelta(days=1)).strftime('%Y-%m-%d')
+    else:
+        return today.strftime('%Y-%m-%d')
+
 
 import watchlist
 from utils import inject_premium_css, get_signal_badge_html, get_day_change_badge_html
@@ -2452,12 +2448,12 @@ scan_data = st.session_state.scan_results
 
 (tab_results, tab_detail, tab_watchlist, tab_ai, tab_gapup, tab_sma, tab_sma65,
  tab_macross, tab_wave, tab_minervini, tab_monthly, tab_weekly, tab_history,
- tab_vcs, tab_vcp, tab_stage2, tab_vpa, tab_alerts, tab_volprofile) = st.tabs([
+ tab_vcs, tab_vcp, tab_stage2, tab_vpa, tab_alerts, tab_volprofile, tab_confluence) = st.tabs([
     "📊 Results", "📈 Detail", "📋 Watchlist", "🤖 AI Pattern",
     "🚀 Gap-Up", "📈 20&50 SMA", "🛡️ 65 SMA", "🔄 MA Cross",
     "🌊 Wave", "🏆 Minervini", "📅 Monthly", "📈 Weekly",
     "📅 History", "📉 VCS", "🎯 VCP", "🚀 Stage2 Brk",
-    "🚥 VPA", "🔄 Alerts", "📊 Vol Profile"
+    "🚥 VPA", "🔄 Alerts", "📊 Vol Profile", "💎 Confluence"
 ])
 
 # ==============================================================================
@@ -6050,4 +6046,194 @@ with tab_volprofile:
             )
         except ImportError:
             st.caption("ℹ️ Excel export unavailable — use CSV downloads above instead.")
+
+# ==============================================================================
+# TAB 20: CONFLUENCE — WaveTrend Buy Signal + Volume Profile Daily Support
+# ==============================================================================
+with tab_confluence:
+    try:
+        st.markdown("### 💎 Confluence Scanner — WaveTrend Buy + Volume Profile Support")
+        st.markdown(
+            "<p style='font-size:0.9rem; color:#94a3b8; margin-top:-8px; line-height:1.5;'>"
+            "Stocks appearing <b style='color:#00e676;'>simultaneously</b> in two independent scanners: "
+            "<b style='color:#29b6f6;'>🌊 WaveTrend</b> (WT1 crossed above WT2 = Buy Signal) "
+            "<b>AND</b> <b style='color:#ffa000;'>📊 Volume Profile</b> (Daily timeframe = ✅ Can Buy Near Support). "
+            "This dual-confirmation dramatically increases trade conviction."
+            "</p>",
+            unsafe_allow_html=True
+        )
+        st.markdown("---")
+
+        today_str = get_market_date()
+        confluence_data = database.get_wt_vp_confluence(today_str)
+
+        # Metrics row
+        cf_m1, cf_m2, cf_m3 = st.columns(3)
+        cf_count = len(confluence_data) if confluence_data else 0
+        cf_deepest_wt = min(r['wt_value'] for r in confluence_data) if confluence_data else 0.0
+        cf_avg_va = (sum(r['daily_pos'] for r in confluence_data) / cf_count) if cf_count > 0 else 0.0
+
+        cf_m1.markdown(
+            f'<div class="glass-card metric-glow-green">'
+            f'<p style="font-size:0.85rem; color:#94a3b8; margin:0;">💎 Confluence Matches</p>'
+            f'<h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{cf_count}</h3>'
+            f'</div>', unsafe_allow_html=True
+        )
+        cf_m2.markdown(
+            f'<div class="glass-card metric-glow-blue">'
+            f'<p style="font-size:0.85rem; color:#94a3b8; margin:0;">🌊 Deepest WT1 Value</p>'
+            f'<h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{cf_deepest_wt:.1f}</h3>'
+            f'</div>', unsafe_allow_html=True
+        )
+        cf_m3.markdown(
+            f'<div class="glass-card metric-glow-purple">'
+            f'<p style="font-size:0.85rem; color:#94a3b8; margin:0;">📊 Avg Daily VA Position</p>'
+            f'<h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ce93d8;">{cf_avg_va:.1f}%</h3>'
+            f'</div>', unsafe_allow_html=True
+        )
+
+        if not confluence_data:
+            st.info(
+                f"No confluence matches found for {today_str}. "
+                "This requires both **WaveTrend** and **Volume Profile** scans to have run today. "
+                "Run them from the 🌊 Wave and 📊 Vol Profile tabs first."
+            )
+        else:
+            # Build table rows
+            rows_html = []
+            for idx, r in enumerate(confluence_data, 1):
+                sym = r.get('symbol', '')
+                cmp = r.get('cmp', 0.0)
+                chg = r.get('day_change_pct', 0.0)
+                wt1 = r.get('wt_value', 0.0)
+                wt2 = r.get('wt2_value', 0.0)
+                wt_d = r.get('wt_diff', 0.0)
+                vol = r.get('volume', 0)
+                va_pos = r.get('daily_pos', 0.0)
+                poc = r.get('daily_poc', 0.0)
+                val_price = r.get('daily_val', 0.0)
+                vah_price = r.get('daily_vah', 0.0)
+
+                # SMA badges
+                sma_badges = []
+                if r.get('above_200sma'): sma_badges.append('<span style="background:rgba(0,230,118,0.12); color:#00e676; padding:1px 5px; border-radius:3px; font-size:0.72rem; font-weight:600;">200</span>')
+                if r.get('above_50sma'): sma_badges.append('<span style="background:rgba(41,182,246,0.12); color:#29b6f6; padding:1px 5px; border-radius:3px; font-size:0.72rem; font-weight:600;">50</span>')
+                if r.get('above_20sma'): sma_badges.append('<span style="background:rgba(206,147,216,0.12); color:#ce93d8; padding:1px 5px; border-radius:3px; font-size:0.72rem; font-weight:600;">20</span>')
+                sma_html = " ".join(sma_badges) if sma_badges else '<span style="color:#64748b; font-size:0.72rem;">—</span>'
+
+                # Day change color
+                chg_color = "#00e676" if chg >= 0 else "#ef4444"
+                chg_sign = "+" if chg >= 0 else ""
+
+                row = (
+                    f'<tr style="border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.2s;">'
+                    f'<td style="padding:10px 12px; color:#64748b; font-weight:500;">{idx}</td>'
+                    f'<td style="padding:10px 12px; font-weight:bold; color:#29b6f6;">{sym}</td>'
+                    f'<td style="padding:10px 12px; color:#e2e8f0; font-weight:500;">₹{cmp:,.2f}</td>'
+                    f'<td style="padding:10px 12px; color:{chg_color}; font-weight:600;">{chg_sign}{chg:.2f}%</td>'
+                    f'<td style="padding:10px 12px; color:#00e676; font-weight:bold;">{wt1:.1f}</td>'
+                    f'<td style="padding:10px 12px; color:#94a3b8;">{wt2:.1f}</td>'
+                    f'<td style="padding:10px 12px; color:#ffa000; font-weight:500;">{va_pos:.1f}%</td>'
+                    f'<td style="padding:10px 12px; color:#00e676;">₹{val_price:,.2f}</td>'
+                    f'<td style="padding:10px 12px; color:#ce93d8;">₹{poc:,.2f}</td>'
+                    f'<td style="padding:10px 12px; color:#ef4444;">₹{vah_price:,.2f}</td>'
+                    f'<td style="padding:10px 12px;">{sma_html}</td>'
+                    f'<td style="padding:10px 12px; color:#94a3b8; text-align:right;">{vol:,}</td>'
+                    f'</tr>'
+                )
+                rows_html.append(row)
+
+            table_body = "".join(rows_html)
+
+            st.markdown(
+                f'<div class="glass-card" style="padding:18px; margin-bottom:22px; border:1px solid rgba(0,230,118,0.2); background:rgba(9,13,22,0.55); border-radius:12px;">'
+                f'<h3 style="margin-top:0; color:#00e676; font-size:1.15rem; display:flex; align-items:center; gap:8px; font-family:Outfit,sans-serif;">'
+                f'💎 Dual-Confirmation Buy Candidates — {today_str}'
+                f'</h3>'
+                f'<p style="font-size:0.82rem; color:#94a3b8; margin-top:-8px; margin-bottom:15px; font-family:Outfit,sans-serif;">'
+                f'Each stock below has a <b style="color:#00e676;">🟢 WaveTrend Buy Signal</b> (WT1 crossing above WT2 in oversold zone) '
+                f'<b>AND</b> is in the <b style="color:#ffa000;">Volume Profile daily ✅ Can Buy zone</b> (near VAL support). '
+                f'<b>Buy Range (VAL)</b> = support entry | <b>Target (POC)</b> = fair value target | <b>Resistance (VAH)</b> = upper limit.'
+                f'</p>'
+                f'<div style="overflow-x:auto;">'
+                f'<table style="width:100%; border-collapse:collapse; text-align:left; font-size:0.85rem; color:#cbd5e1; font-family:Outfit,sans-serif;">'
+                f'<thead>'
+                f'<tr style="border-bottom:1px solid rgba(255,255,255,0.1); color:#38bdf8; font-weight:bold; background:rgba(0,230,118,0.04); font-size:0.78rem; text-transform:uppercase;">'
+                f'<th style="padding:8px 12px;">#</th>'
+                f'<th style="padding:8px 12px;">Symbol</th>'
+                f'<th style="padding:8px 12px;">CMP</th>'
+                f'<th style="padding:8px 12px;">Change</th>'
+                f'<th style="padding:8px 12px; color:#00e676;">WT1</th>'
+                f'<th style="padding:8px 12px;">WT2</th>'
+                f'<th style="padding:8px 12px; color:#ffa000;">VA Pos %</th>'
+                f'<th style="padding:8px 12px; color:#00e676;">Buy Range (VAL)</th>'
+                f'<th style="padding:8px 12px; color:#ce93d8;">Target (POC)</th>'
+                f'<th style="padding:8px 12px; color:#ef4444;">Resistance (VAH)</th>'
+                f'<th style="padding:8px 12px;">Above SMA</th>'
+                f'<th style="padding:8px 12px; text-align:right;">Volume</th>'
+                f'</tr>'
+                f'</thead>'
+                f'<tbody>{table_body}</tbody>'
+                f'</table>'
+                f'</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+            # Quick Trade Board for confluence results
+            render_quick_trade_board(confluence_data, key_prefix="confluence")
+
+            # CSV Download
+            df_confluence = pd.DataFrame([{
+                'Symbol': r['symbol'],
+                'CMP': r['cmp'],
+                'Change %': round(r['day_change_pct'], 2),
+                'WT1': round(r['wt_value'], 2),
+                'WT2': round(r['wt2_value'], 2),
+                'WT Diff': round(r['wt_diff'], 2),
+                'VA Position %': round(r['daily_pos'], 2),
+                'Buy Range (VAL)': round(r['daily_val'], 2),
+                'Target (POC)': round(r['daily_poc'], 2),
+                'Resistance (VAH)': round(r['daily_vah'], 2),
+                'Above 20 SMA': r['above_20sma'],
+                'Above 50 SMA': r['above_50sma'],
+                'Above 200 SMA': r['above_200sma'],
+                'Volume': r['volume'],
+                'Buy Price': r.get('buy_price'),
+                'Exit Price': r.get('exit_price'),
+                'Target Price': r.get('target_price'),
+                'Confidence': r.get('confidence'),
+            } for r in confluence_data])
+
+            csv_cf = df_confluence.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 Download Confluence Results (CSV)",
+                data=csv_cf,
+                file_name=f"WT_VP_Confluence_{today_str}.csv",
+                mime="text/csv",
+                key="dl_confluence_csv"
+            )
+
+            # How it works
+            with st.expander("ℹ️ How Confluence Works", expanded=False):
+                st.markdown("""
+                **This tab shows stocks that pass TWO independent filters simultaneously:**
+
+                1. **🌊 WaveTrend Buy Signal** — The WT1 line has crossed ABOVE WT2 in the oversold zone (below -40), generating a bullish crossover buy signal (green dot).
+
+                2. **📊 Volume Profile Daily Support** — The stock's current price is in the "✅ Can Buy (Near Support)" zone on the daily timeframe, meaning it's near the Value Area Low (VAL) — a strong institutional support level.
+
+                **Why this matters:**
+                - WaveTrend identifies **momentum reversal timing** (when to buy)
+                - Volume Profile identifies **price support levels** (where to buy)
+                - Together, they confirm both **timing AND price level**, dramatically increasing trade success probability
+
+                **How to trade these signals:**
+                - **Entry:** Near VAL (Buy Range) — this is the support level
+                - **Target:** POC (Point of Control) — the high-volume fair value zone
+                - **Stop Loss:** Below VAL by 1-2%
+                """)
+
+    except Exception as e:
+        st.error(f"Error rendering Confluence tab: {e}")
 
