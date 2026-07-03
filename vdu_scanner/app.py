@@ -6130,7 +6130,9 @@ with tab_confluence:
                 row = (
                     f'<tr style="border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.2s;">'
                     f'<td style="padding:10px 12px; color:#64748b; font-weight:500;">{idx}</td>'
-                    f'<td style="padding:10px 12px; font-weight:bold; color:#29b6f6;">{sym}</td>'
+                    f'<td style="padding:10px 12px; font-weight:bold;">'
+                    f'<a href="https://in.tradingview.com/chart/?symbol=NSE:{sym}" target="_blank" style="color:#29b6f6; text-decoration:none;">{sym}</a>'
+                    f'</td>'
                     f'<td style="padding:10px 12px; color:#e2e8f0; font-weight:500;">₹{cmp:,.2f}</td>'
                     f'<td style="padding:10px 12px; color:{chg_color}; font-weight:600;">{chg_sign}{chg:.2f}%</td>'
                     f'<td style="padding:10px 12px; color:#00e676; font-weight:bold;">{wt1:.1f}</td>'
@@ -6387,7 +6389,9 @@ with tab_support:
                 row = (
                     f'<tr style="border-bottom: 1px solid rgba(255,255,255,0.04);">'
                     f'<td style="padding:10px 12px; color:#64748b;">{idx}</td>'
-                    f'<td style="padding:10px 12px; font-weight:bold; color:#29b6f6;">{sym}</td>'
+                    f'<td style="padding:10px 12px; font-weight:bold;">'
+                    f'<a href="https://in.tradingview.com/chart/?symbol=NSE:{sym}" target="_blank" style="color:#29b6f6; text-decoration:none;">{sym}</a>'
+                    f'</td>'
                     f'<td style="padding:10px 12px; color:#e2e8f0;">₹{cmp:,.2f}</td>'
                     f'<td style="padding:10px 12px; color:{chg_color}; font-weight:600;">{chg_sign}{chg:.2f}%</td>'
                     f'<td style="padding:10px 12px; color:{rsi_color}; font-weight:bold;">{rsi:.1f}</td>'
