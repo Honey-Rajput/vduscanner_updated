@@ -6906,9 +6906,19 @@ with tab_bb_squeeze:
         
         # Apply Universe Filter if needed
         # We can just show all of them if universe is ALL NSE, otherwise filter
-        if universe_key != "ALL NSE" and len(bb_list) > 0:
-            valid_set = set([s.replace('.NS', '') for s in raw_symbols])
-            bb_list = [r for r in bb_list if r['symbol'] in valid_set]
+        if "ALL NSE" not in universe_selection.upper() and len(bb_list) > 0:
+            from data_fetcher import get_index_stocks
+            
+            resolved_univ = "ALL NSE"
+            if "NIFTY 500" in universe_selection: resolved_univ = "NIFTY 500"
+            elif "NIFTY 100" in universe_selection: resolved_univ = "NIFTY 100"
+            elif "NIFTY 50" in universe_selection: resolved_univ = "NIFTY 50"
+            elif "WATCHLIST" in universe_selection.upper(): resolved_univ = "WATCHLIST"
+            
+            if resolved_univ != "ALL NSE":
+                raw_symbols = get_index_stocks(resolved_univ)
+                valid_set = set([str(s).replace('.NS', '').strip().upper() for s in raw_symbols if str(s).strip()])
+                bb_list = [r for r in bb_list if r['symbol'] in valid_set]
             
         if len(bb_list) > 0:
             # Sort by total squeezes
