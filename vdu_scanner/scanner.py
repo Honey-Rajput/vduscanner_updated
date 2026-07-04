@@ -1972,3 +1972,62 @@ def scan_support_rsi(symbol: str, df: pd.DataFrame, market_cap: float = 0.0,
     except Exception as e:
         return None
 
+def scan_bb_squeeze(symbol: str, df_daily: pd.DataFrame, df_weekly: pd.DataFrame, df_monthly: pd.DataFrame, market_cap: float = 0.0) -> dict | None:
+    """
+    Scans a stock across Daily, Weekly, and Monthly timeframes to find active Bollinger Band Squeezes.
+    Requires at least one timeframe to be in a squeeze AND the daily price to be above the 50-DMA
+    (to ensure the momentum / likely breakout direction is UPWARD).
+    """
+    if df_daily is None or len(df_daily) < 50:
+        return None
+        
+    try:
+        from indicators import precompute_indicators
+        from config import get_company_name
+        
+        cmp = float(df_daily['Close'].iloc[-1])
+        if cmp < 100 or (market_cap > 0 and market_cap < 2000):
+            return None
+            
+        daily_ind = precompute_indicators(df_daily)
+        weekly_ind = precompute_indicators(df_weekly) if df_weekly is not None and not df_weekly.empty else None
+        monthly_ind = precompute_indicators(df_monthly) if df_monthly is not None and not df_monthly.empty else None
+        
+        # Extract squeeze boolean flags
+        d_squeeze = daily_ind.get('bb_squeeze', False) if daily_ind else False
+        w_squeeze = weekly_ind.get('bb_squeeze', False) if weekly_ind else False
+        m_squeeze = monthly_ind.get('bb_squeeze', False) if monthly_ind else False
+        
+        # Check bullish filter: Price > 50 DMA
+        d_sma50 = daily_ind.get('sma50', 0.0) if daily_ind else 0.0
+        above_50 = (cmp > d_sma50) if d_sma50 > 0 else False
+        
+        # Must have at least one squeeze AND be above 50-DMA (for upward blast)
+        if not (d_squeeze or w_squeeze or m_squeeze) or not above_50:
+            return None
+            
+        # Extract widths
+        d_width = daily_ind.get('bb_width', 0.0) if daily_ind else 0.0
+        w_width = weekly_ind.get('bb_width', 0.0) if weekly_ind else 0.0
+        m_width = monthly_ind.get('bb_width', 0.0) if monthly_ind else 0.0
+        
+        # Calculate day change pct
+        prev_close = float(df_daily['Close'].iloc[-2]) if len(df_daily) >= 2 else cmp
+        day_change_pct = ((cmp - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
+
+        return {
+            'symbol': symbol.strip().upper(),
+            'company_name': get_company_name(symbol),
+            'cmp': round(cmp, 2),
+            'day_change_pct': round(day_change_pct, 2),
+            'daily_squeeze': d_squeeze,
+            'weekly_squeeze': w_squeeze,
+            'monthly_squeeze': m_squeeze,
+            'daily_bb_width': round(d_width, 4) if d_width else 0.0,
+            'weekly_bb_width': round(w_width, 4) if w_width else 0.0,
+            'monthly_bb_width': round(m_width, 4) if m_width else 0.0,
+            'above_50dma': above_50,
+            'market_cap_cr': market_cap
+        }
+    except Exception as e:
+        return None

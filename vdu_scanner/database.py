@@ -342,6 +342,30 @@ def init_db() -> bool:
         """
     ]
     
+    # Inject BB Squeeze Table
+    queries.append(
+        """
+        CREATE TABLE IF NOT EXISTS scanned_bb_squeeze (
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR(20) NOT NULL,
+            company_name VARCHAR(200),
+            cmp DOUBLE PRECISION,
+            day_change_pct DOUBLE PRECISION,
+            daily_squeeze BOOLEAN,
+            weekly_squeeze BOOLEAN,
+            monthly_squeeze BOOLEAN,
+            daily_bb_width DOUBLE PRECISION,
+            weekly_bb_width DOUBLE PRECISION,
+            monthly_bb_width DOUBLE PRECISION,
+            above_50dma BOOLEAN,
+            market_cap_cr DOUBLE PRECISION,
+            scan_date DATE NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, scan_date)
+        );
+        """
+    )
+    
     conn = None
     try:
         conn = get_connection()
@@ -2200,3 +2224,66 @@ def get_latest_rsi_wt_combo() -> tuple[list[dict], str | None]:
         if conn:
             conn.close()
     return results, scan_date
+
+def save_bb_squeeze_only(date_str: str, bb_results: list) -> bool:
+    if not bb_results:
+        return True
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        for r in bb_results:
+            cur.execute("""
+                INSERT INTO scanned_bb_squeeze
+                (symbol, company_name, cmp, day_change_pct,
+                 daily_squeeze, weekly_squeeze, monthly_squeeze,
+                 daily_bb_width, weekly_bb_width, monthly_bb_width,
+                 above_50dma, market_cap_cr, scan_date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (symbol, scan_date) DO UPDATE SET
+                    cmp = EXCLUDED.cmp,
+                    day_change_pct = EXCLUDED.day_change_pct,
+                    daily_squeeze = EXCLUDED.daily_squeeze,
+                    weekly_squeeze = EXCLUDED.weekly_squeeze,
+                    monthly_squeeze = EXCLUDED.monthly_squeeze,
+                    daily_bb_width = EXCLUDED.daily_bb_width,
+                    weekly_bb_width = EXCLUDED.weekly_bb_width,
+                    monthly_bb_width = EXCLUDED.monthly_bb_width,
+                    above_50dma = EXCLUDED.above_50dma
+            """, (
+                r['symbol'], r.get('company_name', ''), float(r['cmp']), float(r['day_change_pct']),
+                bool(r.get('daily_squeeze', False)), bool(r.get('weekly_squeeze', False)), bool(r.get('monthly_squeeze', False)),
+                float(r.get('daily_bb_width', 0.0) or 0.0), float(r.get('weekly_bb_width', 0.0) or 0.0), float(r.get('monthly_bb_width', 0.0) or 0.0),
+                bool(r.get('above_50dma', False)), float(r.get('market_cap_cr', 0.0)), date_str
+            ))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        print(f"Error saving BB Squeeze to DB: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def get_cached_bb_squeeze(date_str: str) -> list:
+    conn = None
+    results = []
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM scanned_bb_squeeze WHERE scan_date = %s", (date_str,))
+        rows = cur.fetchall()
+        cur.close()
+        for r in rows:
+            r_dict = dict(r)
+            r_dict['scan_date'] = r_dict['scan_date'].strftime("%Y-%m-%d")
+            results.append(r_dict)
+    except Exception as e:
+        print(f"Error fetching cached BB Squeeze: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return results

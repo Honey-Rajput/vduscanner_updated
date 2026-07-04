@@ -872,6 +872,8 @@ def render_quick_trade_board(results_list: list, key_prefix: str):
 
 
 # --- Initialize Session State ---
+if 'bb_squeeze_results' not in st.session_state:
+    st.session_state.bb_squeeze_results = None
 if 'scan_results' not in st.session_state:
     st.session_state.scan_results = None
 if 'total_scanned' not in st.session_state:
@@ -1228,6 +1230,83 @@ def run_background_momentum_scans():
     # Launch daemon thread
     t = threading.Thread(target=target_runner, name="Background_Momentum_Scans", daemon=True)
     t.start()
+
+
+def run_background_bb_squeeze_scan():
+    if ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
+        return
+        
+    is_already_running = any(t.name == "Background_BB_Squeeze" for t in __import__('threading').enumerate())
+    if is_already_running:
+        return
+        
+    ALL_TAB_SCAN_STATUS["bb_squeeze_running"] = True
+    
+    def thread_runner():
+        import yfinance as yf
+        import pandas as pd
+        import concurrent.futures
+        
+        try:
+            today_str = get_market_date()
+            cached_bb = database.get_cached_bb_squeeze(today_str)
+            if cached_bb and len(cached_bb) > 0:
+                ALL_TAB_SCAN_STATUS["bb_squeeze_results"] = cached_bb
+                st.session_state.bb_squeeze_results = cached_bb
+                ALL_TAB_SCAN_STATUS["bb_squeeze_running"] = False
+                return
+                
+            from scanner import scan_bb_squeeze
+            raw_symbols = get_index_stocks("ALL NSE")
+            symbols_to_scan = [s if s.endswith('.NS') else f"{s}.NS" for s in raw_symbols if str(s).strip()]
+            
+            bb_results = []
+            chunk_size = 100
+            chunks = [symbols_to_scan[i:i+chunk_size] for i in range(0, len(symbols_to_scan), chunk_size)]
+            
+            for chunk in chunks:
+                try:
+                    df_daily = yf.download(tickers=chunk, period="1y", interval="1d", progress=False, threads=False)
+                    df_weekly = yf.download(tickers=chunk, period="2y", interval="1wk", progress=False, threads=False)
+                    df_monthly = yf.download(tickers=chunk, period="5y", interval="1mo", progress=False, threads=False)
+                    
+                    for sym_ns in chunk:
+                        try:
+                            sym = sym_ns.replace('.NS', '')
+                            # Extract daily
+                            d_df = df_daily.xs(sym_ns, axis=1, level=1).dropna(subset=['Close']) if isinstance(df_daily.columns, pd.MultiIndex) else df_daily.dropna(subset=['Close'])
+                            if d_df.empty: continue
+                            
+                            # Extract weekly
+                            w_df = df_weekly.xs(sym_ns, axis=1, level=1).dropna(subset=['Close']) if isinstance(df_weekly.columns, pd.MultiIndex) else df_weekly.dropna(subset=['Close'])
+                            
+                            # Extract monthly
+                            m_df = df_monthly.xs(sym_ns, axis=1, level=1).dropna(subset=['Close']) if isinstance(df_monthly.columns, pd.MultiIndex) else df_monthly.dropna(subset=['Close'])
+                            
+                            res = scan_bb_squeeze(sym, d_df, w_df, m_df)
+                            if res:
+                                bb_results.append(res)
+                        except Exception:
+                            pass
+                except Exception as chunk_ex:
+                    pass
+                    
+            ALL_TAB_SCAN_STATUS["bb_squeeze_results"] = bb_results
+            st.session_state.bb_squeeze_results = bb_results
+            try:
+                database.save_bb_squeeze_only(today_str, bb_results)
+            except:
+                pass
+            
+        except Exception:
+            pass
+        finally:
+            ALL_TAB_SCAN_STATUS["bb_squeeze_running"] = False
+            
+    import threading
+    t = threading.Thread(target=thread_runner, name="Background_BB_Squeeze", daemon=True)
+    t.start()
+
 
 def run_background_all_tab_scans():
     """
@@ -1709,6 +1788,11 @@ if st.session_state.scan_results is None and not st.session_state.get('db_cache_
                     st.session_state.vp_results = database.get_cached_volume_profile(latest_date_str)
                 except Exception:
                     st.session_state.vp_results = []
+                try:
+                    st.session_state.bb_squeeze_results = database.get_cached_bb_squeeze(latest_date_str)
+                except Exception:
+                    st.session_state.bb_squeeze_results = []
+
                 st.session_state.total_scanned = cached_log.get('total_scanned', 0)
                 st.session_state.failed_count = 0
                 st.session_state.last_scanned = latest_date_str + " (Loaded from DB Cache)"
@@ -2504,12 +2588,12 @@ scan_data = st.session_state.scan_results
 
 (tab_results, tab_detail, tab_watchlist, tab_ai, tab_gapup, tab_sma, tab_sma65,
  tab_macross, tab_wave, tab_minervini, tab_monthly, tab_weekly, tab_history,
- tab_vcs, tab_vcp, tab_stage2, tab_vpa, tab_alerts, tab_volprofile, tab_confluence, tab_support, tab_rsi_wt) = st.tabs([
+ tab_vcs, tab_vcp, tab_stage2, tab_vpa, tab_alerts, tab_volprofile, tab_confluence, tab_support, tab_rsi_wt, tab_bb_squeeze) = st.tabs([
     "📊 Results", "📈 Detail", "📋 Watchlist", "🤖 AI Pattern",
     "🚀 Gap-Up", "📈 20&50 SMA", "🛡️ 65 SMA", "🔄 MA Cross",
     "🌊 Wave", "🏆 Minervini", "📅 Monthly", "📈 Weekly",
     "📅 History", "📉 VCS", "🎯 VCP", "🚀 Stage2 Brk",
-    "🚥 VPA", "🔄 Alerts", "📊 Vol Profile", "💎 Confluence", "🛡️ Support", "🎯 RSI+Wave"
+    "🚥 VPA", "🔄 Alerts", "📊 Vol Profile", "💎 Confluence", "🛡️ Support", "🎯 RSI+Wave", "💥 BB Squeeze"
 ])
 
 # ==============================================================================
@@ -6808,3 +6892,42 @@ with tab_rsi_wt:
     except Exception as e:
         st.error(f"Error rendering RSI+Wave tab: {e}")
 
+
+
+# ==============================================================================
+# TAB: BB SQUEEZE
+# ==============================================================================
+with tab_bb_squeeze:
+    st.markdown("### 💥 Bollinger Band Squeeze (Upward Blast Setups)")
+    st.markdown("Stocks in a severe volatility squeeze (tight Bollinger Bands) trading above their 50-DMA, indicating they may blast upward soon.")
+    
+    if st.session_state.get('bb_squeeze_results') is not None:
+        bb_list = st.session_state.bb_squeeze_results
+        
+        # Apply Universe Filter if needed
+        # We can just show all of them if universe is ALL NSE, otherwise filter
+        if universe_key != "ALL NSE" and len(bb_list) > 0:
+            valid_set = set([s.replace('.NS', '') for s in raw_symbols])
+            bb_list = [r for r in bb_list if r['symbol'] in valid_set]
+            
+        if len(bb_list) > 0:
+            # Sort by total squeezes
+            def sort_key(r):
+                return (r.get('monthly_squeeze', False), r.get('weekly_squeeze', False), r.get('daily_squeeze', False))
+            bb_list.sort(key=sort_key, reverse=True)
+            
+            df_bb = pd.DataFrame(bb_list)
+            
+            # Format UI columns
+            df_bb['Daily'] = df_bb['daily_squeeze'].map({True: '🟢 Squeeze', False: '⚪'})
+            df_bb['Weekly'] = df_bb['weekly_squeeze'].map({True: '🟢 Squeeze', False: '⚪'})
+            df_bb['Monthly'] = df_bb['monthly_squeeze'].map({True: '🟢 Squeeze', False: '⚪'})
+            df_bb['CMP'] = df_bb['cmp'].apply(lambda x: f"₹{x:,.2f}")
+            df_bb['Change'] = df_bb['day_change_pct'].apply(lambda x: f"{x:+.2f}%")
+            
+            disp_cols = ['symbol', 'company_name', 'CMP', 'Change', 'Daily', 'Weekly', 'Monthly']
+            st.dataframe(df_bb[disp_cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("No BB Squeeze setups found for the selected universe.")
+    else:
+        st.info("Background scanner is analyzing BB Squeezes... Please wait.")
