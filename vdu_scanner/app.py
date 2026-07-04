@@ -2450,12 +2450,12 @@ scan_data = st.session_state.scan_results
 
 (tab_results, tab_detail, tab_watchlist, tab_ai, tab_gapup, tab_sma, tab_sma65,
  tab_macross, tab_wave, tab_minervini, tab_monthly, tab_weekly, tab_history,
- tab_vcs, tab_vcp, tab_stage2, tab_vpa, tab_alerts, tab_volprofile, tab_confluence, tab_support) = st.tabs([
+ tab_vcs, tab_vcp, tab_stage2, tab_vpa, tab_alerts, tab_volprofile, tab_confluence, tab_support, tab_rsi_wt) = st.tabs([
     "📊 Results", "📈 Detail", "📋 Watchlist", "🤖 AI Pattern",
     "🚀 Gap-Up", "📈 20&50 SMA", "🛡️ 65 SMA", "🔄 MA Cross",
     "🌊 Wave", "🏆 Minervini", "📅 Monthly", "📈 Weekly",
     "📅 History", "📉 VCS", "🎯 VCP", "🚀 Stage2 Brk",
-    "🚥 VPA", "🔄 Alerts", "📊 Vol Profile", "💎 Confluence", "🛡️ Support"
+    "🚥 VPA", "🔄 Alerts", "📊 Vol Profile", "💎 Confluence", "🛡️ Support", "🎯 RSI+Wave"
 ])
 
 # ==============================================================================
@@ -6515,4 +6515,242 @@ with tab_support:
 
     except Exception as e:
         st.error(f"Error rendering Support Bounce tab: {e}")
+
+# ==============================================================================
+# TAB 22: RSI + WAVETREND DOUBLE OVERSOLD SCANNER
+# ==============================================================================
+with tab_rsi_wt:
+    try:
+        st.markdown("### 🎯 RSI + WaveTrend Double Oversold Scanner")
+        st.markdown(
+            "<p style='font-size:0.9rem; color:#94a3b8; margin-top:-8px; line-height:1.5;'>"
+            "Finds stocks where <b style='color:#ef4444;'>RSI is oversold</b> AND "
+            "<b style='color:#ce93d8;'>WaveTrend is below -40 with a buy signal</b> — "
+            "the strongest mean-reversion candidates. "
+            "Data is fetched from <b style='color:#29b6f6;'>existing database scans</b> (fast JOIN query). "
+            "<span style='color:#ffa000; font-weight:600;'>Requires both Wave and Support scans to be run on the same day.</span>"
+            "</p>",
+            unsafe_allow_html=True
+        )
+        st.markdown("---")
+
+        rw_today_str = get_market_date()
+
+        # Settings
+        rw_col1, rw_col2 = st.columns(2)
+        with rw_col1:
+            rw_rsi_thresh = st.slider("RSI Threshold (Oversold)", min_value=20.0, max_value=45.0, value=35.0, step=1.0, key="rw_rsi_thresh")
+        with rw_col2:
+            rw_wt_thresh = st.slider("WaveTrend Threshold", min_value=-80.0, max_value=-20.0, value=-40.0, step=5.0, key="rw_wt_thresh")
+
+        # Scan button — fetches from DB (fast)
+        if st.button("🎯 Run RSI + Wave Combo Scan", key="run_rsi_wt_scan", type="primary"):
+            with st.spinner("Querying database for RSI oversold + WaveTrend buy signal stocks..."):
+                combo_results = database.get_rsi_wt_combo(rw_today_str, rsi_threshold=rw_rsi_thresh, wt_threshold=rw_wt_thresh)
+
+                # Save to dedicated combo table
+                if combo_results:
+                    try:
+                        database.save_rsi_wt_combo(rw_today_str, combo_results)
+                        st.toast(f"✅ Saved {len(combo_results)} RSI+Wave combo results to database!", icon="💾")
+                    except Exception as db_ex:
+                        print(f"Failed to save RSI+WT combo results: {db_ex}")
+                else:
+                    st.warning("No stocks found matching both RSI oversold AND WaveTrend buy criteria. Ensure both **Wave** and **Support** scans were run today.")
+
+                st.session_state.rsi_wt_combo_results = combo_results
+                st.session_state.rsi_wt_combo_scan_date = rw_today_str
+
+        # Load from DB cache if not in session
+        if 'rsi_wt_combo_results' not in st.session_state or not st.session_state.rsi_wt_combo_results:
+            # Try today first
+            cached_combo = database.get_rsi_wt_combo(rw_today_str, rsi_threshold=rw_rsi_thresh, wt_threshold=rw_wt_thresh)
+            if cached_combo:
+                st.session_state.rsi_wt_combo_results = cached_combo
+                st.session_state.rsi_wt_combo_scan_date = rw_today_str
+            else:
+                # Fallback: load the most recent combo results from any date
+                latest_combo, latest_combo_date = database.get_latest_rsi_wt_combo()
+                if latest_combo:
+                    st.session_state.rsi_wt_combo_results = latest_combo
+                    st.session_state.rsi_wt_combo_scan_date = latest_combo_date
+
+        rw_data = st.session_state.get('rsi_wt_combo_results', [])
+        rw_scan_date = st.session_state.get('rsi_wt_combo_scan_date', rw_today_str)
+
+        # Show info if displaying older results
+        if rw_data and rw_scan_date != rw_today_str:
+            st.info(f"📅 Showing last scan results from **{rw_scan_date}**. Click '🎯 Run RSI + Wave Combo Scan' to refresh with today's data.")
+
+        # Metrics
+        rw_m1, rw_m2, rw_m3, rw_m4 = st.columns(4)
+        rw_count = len(rw_data) if rw_data else 0
+        rw_avg_rsi = (sum(r['rsi'] for r in rw_data) / rw_count) if rw_count > 0 else 0.0
+        rw_avg_wt = (sum(r['wt_value'] for r in rw_data) / rw_count) if rw_count > 0 else 0.0
+        rw_buy_signals = len([r for r in rw_data if r.get('buy_signal')]) if rw_data else 0
+        rw_high_conf = len([r for r in rw_data if r.get('confidence') == 'High']) if rw_data else 0
+
+        rw_m1.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">🎯 Double Oversold</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{rw_count}</h3></div>', unsafe_allow_html=True)
+        rw_m2.markdown(f'<div class="glass-card metric-glow-red"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">📉 Avg RSI</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ef4444;">{rw_avg_rsi:.1f}</h3></div>', unsafe_allow_html=True)
+        rw_m3.markdown(f'<div class="glass-card metric-glow-purple"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">🌊 Avg WT1</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ce93d8;">{rw_avg_wt:.1f}</h3></div>', unsafe_allow_html=True)
+        rw_m4.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">🟢 Buy Signals</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{rw_buy_signals}</h3></div>', unsafe_allow_html=True)
+
+        if not rw_data:
+            st.info("No RSI + WaveTrend combo results found. Run both **🛡️ Support** scan and **🌊 Wave** scan first, then click '🎯 Run RSI + Wave Combo Scan'.")
+        else:
+            # Build table
+            rw_rows_html = []
+            for idx, r in enumerate(rw_data, 1):
+                sym = r.get('symbol', '')
+                cmp = r.get('cmp', 0.0)
+                chg = r.get('day_change_pct', 0.0)
+                rsi = r.get('rsi', 0.0)
+                wt1 = r.get('wt_value', 0.0)
+                wt2 = r.get('wt2_value', 0.0)
+                wt_diff = r.get('wt_diff', 0.0)
+                buy_sig = r.get('buy_signal', False)
+                sup_price = r.get('support_price', 0.0)
+                touches = r.get('support_touches', 0)
+                dist = r.get('distance_to_support_pct', 0.0)
+                sc = r.get('score', 0.0)
+                vol = r.get('volume', 0)
+                conf = r.get('confidence', 'Low')
+
+                # Color coding
+                chg_color = "#00e676" if chg >= 0 else "#ef4444"
+                chg_sign = "+" if chg >= 0 else ""
+                rsi_color = "#ef4444" if rsi <= 30 else "#ffa000" if rsi <= 35 else "#94a3b8"
+                wt_color = "#ef4444" if wt1 <= -60 else "#ce93d8" if wt1 <= -50 else "#29b6f6"
+                conf_color = "#00e676" if conf == "High" else "#ffa000" if conf == "Medium" else "#ef4444"
+                touch_color = "#00e676" if touches >= 3 else "#ffa000" if touches >= 2 else "#94a3b8"
+                signal_html = '<span style="color:#00e676; font-weight:bold;">🟢 BUY</span>' if buy_sig else '<span style="color:#64748b;">—</span>'
+
+                conf_badge = f'<span style="background:rgba({("0,230,118" if conf=="High" else "255,160,0" if conf=="Medium" else "239,68,68")},0.12); color:{conf_color}; padding:2px 6px; border-radius:4px; font-size:0.75rem; font-weight:bold; border:1px solid {conf_color};">{conf}</span>'
+
+                # Score color
+                sc_color = "#00e676" if sc >= 60 else "#ffa000" if sc >= 35 else "#ce93d8"
+
+                row = (
+                    f'<tr style="border-bottom: 1px solid rgba(255,255,255,0.04);">'
+                    f'<td style="padding:10px 12px; color:#64748b;">{idx}</td>'
+                    f'<td style="padding:10px 12px; font-weight:bold;">'
+                    f'<a href="https://in.tradingview.com/chart/?symbol=NSE:{sym}" target="_blank" style="color:#29b6f6; text-decoration:none;">{sym}</a>'
+                    f'</td>'
+                    f'<td style="padding:10px 12px; color:#e2e8f0;">₹{cmp:,.2f}</td>'
+                    f'<td style="padding:10px 12px; color:{chg_color}; font-weight:600;">{chg_sign}{chg:.2f}%</td>'
+                    f'<td style="padding:10px 12px; color:{rsi_color}; font-weight:bold;">{rsi:.1f}</td>'
+                    f'<td style="padding:10px 12px; color:{wt_color}; font-weight:600;">{wt1:.1f}</td>'
+                    f'<td style="padding:10px 12px; color:#94a3b8;">{wt2:.1f}</td>'
+                    f'<td style="padding:10px 12px;">{signal_html}</td>'
+                    f'<td style="padding:10px 12px; color:#00e676; font-weight:600;">₹{sup_price:,.2f}</td>'
+                    f'<td style="padding:10px 12px; color:{touch_color}; font-weight:bold; text-align:center;">{touches}</td>'
+                    f'<td style="padding:10px 12px;">{conf_badge}</td>'
+                    f'<td style="padding:10px 12px; color:{sc_color}; font-weight:600;">{sc:.1f}</td>'
+                    f'<td style="padding:10px 12px; color:#94a3b8; text-align:right;">{vol:,}</td>'
+                    f'</tr>'
+                )
+                rw_rows_html.append(row)
+
+            rw_table_body = "".join(rw_rows_html)
+
+            st.markdown(
+                f'<div class="glass-card" style="padding:18px; margin-bottom:22px; border:1px solid rgba(206,147,216,0.3); background:rgba(9,13,22,0.55); border-radius:12px;">'
+                f'<h3 style="margin-top:0; color:#ce93d8; font-size:1.15rem; display:flex; align-items:center; gap:8px; font-family:Outfit,sans-serif;">'
+                f'🎯 RSI Oversold + WaveTrend Buy Signal — {rw_scan_date}'
+                f'</h3>'
+                f'<p style="font-size:0.82rem; color:#94a3b8; margin-top:-8px; margin-bottom:15px; font-family:Outfit,sans-serif;">'
+                f'Stocks with <b>both</b> RSI in oversold zone AND WaveTrend showing buy signal below -40. '
+                f'<b style="color:#00e676;">Higher score = stronger double oversold setup.</b> '
+                f'Wait for a green candle confirmation before entering.'
+                f'</p>'
+                f'<div style="overflow-x:auto;">'
+                f'<table style="width:100%; border-collapse:collapse; text-align:left; font-size:0.85rem; color:#cbd5e1; font-family:Outfit,sans-serif;">'
+                f'<thead>'
+                f'<tr style="border-bottom:1px solid rgba(255,255,255,0.1); color:#38bdf8; font-weight:bold; background:rgba(206,147,216,0.06); font-size:0.78rem; text-transform:uppercase;">'
+                f'<th style="padding:8px 12px;">#</th>'
+                f'<th style="padding:8px 12px;">Symbol</th>'
+                f'<th style="padding:8px 12px;">CMP</th>'
+                f'<th style="padding:8px 12px;">Change</th>'
+                f'<th style="padding:8px 12px; color:#ef4444;">RSI</th>'
+                f'<th style="padding:8px 12px; color:#ce93d8;">WT1</th>'
+                f'<th style="padding:8px 12px;">WT2</th>'
+                f'<th style="padding:8px 12px; color:#00e676;">Signal</th>'
+                f'<th style="padding:8px 12px; color:#00e676;">Support</th>'
+                f'<th style="padding:8px 12px; text-align:center;">Touches</th>'
+                f'<th style="padding:8px 12px;">Confidence</th>'
+                f'<th style="padding:8px 12px; color:#ce93d8;">Score</th>'
+                f'<th style="padding:8px 12px; text-align:right;">Volume</th>'
+                f'</tr>'
+                f'</thead>'
+                f'<tbody>{rw_table_body}</tbody>'
+                f'</table>'
+                f'</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+            # Quick Trade Board
+            render_quick_trade_board(rw_data, key_prefix="rsi_wt_combo")
+
+            # CSV Download
+            df_rw = pd.DataFrame([{
+                'Symbol': r['symbol'],
+                'CMP': r['cmp'],
+                'Change %': round(r['day_change_pct'], 2),
+                'RSI': round(r['rsi'], 2),
+                'WT1': round(r.get('wt_value', 0), 2),
+                'WT2': round(r.get('wt2_value', 0), 2),
+                'WT Diff': round(r.get('wt_diff', 0), 2),
+                'Buy Signal': r.get('buy_signal', False),
+                'Support Level': r.get('support_price', 0),
+                'Touches': r.get('support_touches', 0),
+                'Distance %': r.get('distance_to_support_pct', 0),
+                'Score': r.get('score', 0),
+                'Confidence': r.get('confidence', ''),
+                'Buy Price': r.get('buy_price'),
+                'Exit Price': r.get('exit_price'),
+                'Target Price': r.get('target_price'),
+                'Volume': r.get('volume', 0),
+            } for r in rw_data])
+
+            csv_rw = df_rw.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 Download RSI+Wave Combo Results (CSV)",
+                data=csv_rw,
+                file_name=f"RSI_Wave_Combo_{rw_scan_date}.csv",
+                mime="text/csv",
+                key="dl_rsi_wt_csv"
+            )
+
+            # Explainer
+            with st.expander("ℹ️ How RSI + WaveTrend Double Oversold Scanner Works", expanded=False):
+                st.markdown("""
+                **This scanner combines two powerful oversold indicators for high-conviction buy setups:**
+
+                1. **📉 RSI Oversold** — RSI(14) ≤ 35 indicates selling pressure exhaustion from the Support Bounce scan.
+
+                2. **🌊 WaveTrend Buy Signal** — WT1 ≤ -40 (deep oversold zone) with a bullish crossover (WT1 crosses above WT2 = 🟢 green dot) from the Wave scan.
+
+                3. **🔗 Database JOIN** — Cross-references both scans on the same day to find stocks appearing in BOTH oversold lists. This is a database-only operation (no live data fetch), so it's extremely fast.
+
+                **Scoring Formula:**
+                - **RSI depth**: `(35 - RSI) × 2` — deeper oversold = higher score
+                - **WT depth**: `(|WT1| - 40) × 1.5` — deeper below -40 = higher score
+                - **Buy signal**: `+25 points` if WT1 crossed above WT2 (green dot)
+                - **Support touches**: `touches × 10` — more historical bounces = stronger floor
+
+                **Confidence Levels:**
+                - **🟢 High**: RSI ≤ 30 + WT ≤ -50 + Buy Signal + Support touches ≥ 3
+                - **🟡 Medium**: RSI ≤ 35 + WT ≤ -40 + Buy Signal
+                - **🔴 Low**: Both oversold but missing buy signal or shallow levels
+
+                **How to trade:**
+                - **Entry:** Wait for a green candle bounce confirmation
+                - **Stop Loss:** 3-5% below the support level
+                - **Target:** 15-25% upside (double oversold = stronger mean reversion)
+                - **Best setups:** High confidence + Score > 50
+                """)
+
+    except Exception as e:
+        st.error(f"Error rendering RSI+Wave tab: {e}")
 

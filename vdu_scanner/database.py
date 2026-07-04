@@ -309,6 +309,36 @@ def init_db() -> bool:
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(symbol, scan_date)
         );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scanned_rsi_wt_combo (
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR(20) NOT NULL,
+            company_name VARCHAR(200),
+            cmp DOUBLE PRECISION,
+            day_change_pct DOUBLE PRECISION,
+            rsi DOUBLE PRECISION,
+            wt_value DOUBLE PRECISION,
+            wt2_value DOUBLE PRECISION,
+            wt_diff DOUBLE PRECISION,
+            buy_signal BOOLEAN DEFAULT FALSE,
+            support_price DOUBLE PRECISION,
+            support_touches INT,
+            distance_to_support_pct DOUBLE PRECISION,
+            above_20sma BOOLEAN DEFAULT FALSE,
+            above_50sma BOOLEAN DEFAULT FALSE,
+            above_200sma BOOLEAN DEFAULT FALSE,
+            volume BIGINT,
+            score DOUBLE PRECISION,
+            confidence VARCHAR(50),
+            buy_price DOUBLE PRECISION,
+            exit_price DOUBLE PRECISION,
+            target_price DOUBLE PRECISION,
+            recommendation TEXT,
+            scan_date DATE NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, scan_date)
+        );
         """
     ]
     
@@ -1964,6 +1994,208 @@ def get_latest_support_rsi() -> tuple[list[dict], str | None]:
             results.append(r_dict)
     except Exception as e:
         print(f"Error loading latest support RSI from database: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return results, scan_date
+
+
+def get_rsi_wt_combo(date_str: str, rsi_threshold: float = 35.0, wt_threshold: float = -40.0) -> list[dict]:
+    """
+    Finds stocks that appear in BOTH scanned_wt_cross (WT oversold + buy signal)
+    and scanned_support_rsi (RSI oversold) on the same scan date.
+    JOINs the two tables for fast database-only retrieval.
+    Computes a combo score and confidence level.
+    """
+    query = """
+    SELECT
+        wt.symbol,
+        wt.company_name,
+        wt.cmp,
+        wt.day_change_pct,
+        sr.rsi,
+        sr.cci,
+        wt.wt_value,
+        wt.wt2_value,
+        wt.wt_diff,
+        wt.buy_signal,
+        sr.support_price,
+        sr.support_touches,
+        sr.distance_to_support_pct,
+        wt.above_20sma,
+        wt.above_50sma,
+        sr.above_200sma,
+        wt.volume,
+        wt.buy_price,
+        wt.exit_price,
+        wt.target_price,
+        wt.confidence AS wt_confidence,
+        wt.recommendation,
+        wt.scan_date
+    FROM scanned_wt_cross wt
+    INNER JOIN scanned_support_rsi sr
+        ON wt.symbol = sr.symbol AND wt.scan_date = sr.scan_date
+    WHERE wt.scan_date = %s
+      AND wt.wt_value <= %s
+      AND sr.rsi <= %s
+    ORDER BY sr.rsi ASC, wt.wt_value ASC;
+    """
+    conn = None
+    results = []
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(query, (date_str, wt_threshold, rsi_threshold))
+        rows = cur.fetchall()
+        cur.close()
+        for r in rows:
+            r_dict = dict(r)
+            r_dict['scan_date'] = r_dict['scan_date'].strftime("%Y-%m-%d")
+            rsi_val = float(r_dict.get('rsi') or 0.0)
+            wt_val = float(r_dict.get('wt_value') or 0.0)
+            r_dict['rsi'] = rsi_val
+            r_dict['cci'] = float(r_dict.get('cci') or 0.0)
+            r_dict['wt_value'] = wt_val
+            r_dict['wt2_value'] = float(r_dict.get('wt2_value') or 0.0)
+            r_dict['wt_diff'] = float(r_dict.get('wt_diff') or 0.0)
+            r_dict['buy_signal'] = bool(r_dict.get('buy_signal', False))
+            r_dict['support_price'] = float(r_dict.get('support_price') or 0.0)
+            r_dict['support_touches'] = int(r_dict.get('support_touches') or 0)
+            r_dict['distance_to_support_pct'] = float(r_dict.get('distance_to_support_pct') or 0.0)
+            r_dict['above_20sma'] = bool(r_dict.get('above_20sma', False))
+            r_dict['above_50sma'] = bool(r_dict.get('above_50sma', False))
+            r_dict['above_200sma'] = bool(r_dict.get('above_200sma', False))
+            r_dict['volume'] = int(r_dict.get('volume') or 0)
+
+            # Compute combo score
+            rsi_bonus = max(0, (rsi_threshold - rsi_val)) * 2.0
+            wt_bonus = max(0, abs(wt_val) - abs(wt_threshold)) * 1.5
+            signal_bonus = 25.0 if r_dict['buy_signal'] else 0.0
+            touch_bonus = r_dict['support_touches'] * 10.0
+            combo_score = round(rsi_bonus + wt_bonus + signal_bonus + touch_bonus, 1)
+            r_dict['score'] = combo_score
+
+            # Compute confidence
+            if rsi_val <= 30 and wt_val <= -50 and r_dict['buy_signal'] and r_dict['support_touches'] >= 3:
+                r_dict['confidence'] = 'High'
+            elif rsi_val <= rsi_threshold and wt_val <= wt_threshold and r_dict['buy_signal']:
+                r_dict['confidence'] = 'Medium'
+            else:
+                r_dict['confidence'] = 'Low'
+
+            results.append(r_dict)
+
+        # Sort by combo score descending
+        results.sort(key=lambda x: x.get('score', 0), reverse=True)
+    except Exception as e:
+        print(f"Error loading RSI+WT combo from database: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return results
+
+
+def save_rsi_wt_combo(date_str: str, results: list[dict]) -> bool:
+    """
+    Saves the RSI + WaveTrend combo scan results for the given date.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM scanned_rsi_wt_combo WHERE scan_date = %s;", (date_str,))
+
+        insert_query = """
+        INSERT INTO scanned_rsi_wt_combo (symbol, company_name, cmp, day_change_pct, rsi,
+                                          wt_value, wt2_value, wt_diff, buy_signal,
+                                          support_price, support_touches, distance_to_support_pct,
+                                          above_20sma, above_50sma, above_200sma, volume, score,
+                                          confidence, buy_price, exit_price, target_price,
+                                          recommendation, scan_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+        for r in results:
+            cur.execute(insert_query, (
+                str(r['symbol']),
+                str(r.get('company_name', '')),
+                float(r.get('cmp', 0)),
+                float(r.get('day_change_pct', 0)),
+                float(r.get('rsi', 0)),
+                float(r.get('wt_value', 0)),
+                float(r.get('wt2_value', 0)),
+                float(r.get('wt_diff', 0)),
+                bool(r.get('buy_signal', False)),
+                float(r.get('support_price', 0)) if r.get('support_price') is not None else None,
+                int(r.get('support_touches', 0)),
+                float(r.get('distance_to_support_pct', 0)),
+                bool(r.get('above_20sma', False)),
+                bool(r.get('above_50sma', False)),
+                bool(r.get('above_200sma', False)),
+                int(r.get('volume', 0)),
+                float(r.get('score', 0)),
+                str(r.get('confidence', 'Low')),
+                float(r['buy_price']) if r.get('buy_price') is not None else None,
+                float(r['exit_price']) if r.get('exit_price') is not None else None,
+                float(r['target_price']) if r.get('target_price') is not None else None,
+                str(r.get('recommendation', '')),
+                date_str
+            ))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        print(f"Error saving RSI+WT combo results: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_latest_rsi_wt_combo() -> tuple[list[dict], str | None]:
+    """
+    Retrieves the most recent RSI + WaveTrend combo results,
+    regardless of date. Returns (results_list, scan_date_str) or ([], None).
+    """
+    query = """
+    SELECT symbol, company_name, cmp, day_change_pct, rsi,
+           wt_value, wt2_value, wt_diff, buy_signal,
+           support_price, support_touches, distance_to_support_pct,
+           above_20sma, above_50sma, above_200sma, volume, score,
+           confidence, buy_price, exit_price, target_price,
+           recommendation, scan_date
+    FROM scanned_rsi_wt_combo
+    WHERE scan_date = (SELECT MAX(scan_date) FROM scanned_rsi_wt_combo)
+    ORDER BY score DESC;
+    """
+    conn = None
+    results = []
+    scan_date = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(query)
+        rows = cur.fetchall()
+        cur.close()
+        for r in rows:
+            r_dict = dict(r)
+            scan_date = r_dict['scan_date'].strftime("%Y-%m-%d") if scan_date is None else scan_date
+            r_dict['scan_date'] = r_dict['scan_date'].strftime("%Y-%m-%d")
+            r_dict['rsi'] = float(r_dict.get('rsi') or 0.0)
+            r_dict['wt_value'] = float(r_dict.get('wt_value') or 0.0)
+            r_dict['wt2_value'] = float(r_dict.get('wt2_value') or 0.0)
+            r_dict['wt_diff'] = float(r_dict.get('wt_diff') or 0.0)
+            r_dict['buy_signal'] = bool(r_dict.get('buy_signal', False))
+            r_dict['support_price'] = float(r_dict.get('support_price') or 0.0)
+            r_dict['support_touches'] = int(r_dict.get('support_touches') or 0)
+            r_dict['distance_to_support_pct'] = float(r_dict.get('distance_to_support_pct') or 0.0)
+            r_dict['above_20sma'] = bool(r_dict.get('above_20sma', False))
+            r_dict['above_50sma'] = bool(r_dict.get('above_50sma', False))
+            r_dict['above_200sma'] = bool(r_dict.get('above_200sma', False))
+            r_dict['volume'] = int(r_dict.get('volume') or 0)
+            r_dict['score'] = float(r_dict.get('score') or 0.0)
+            results.append(r_dict)
+    except Exception as e:
+        print(f"Error loading latest RSI+WT combo from database: {e}")
     finally:
         if conn:
             conn.close()
