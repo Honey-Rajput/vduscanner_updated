@@ -1735,6 +1735,9 @@ if enable_background_scans:
     # Auto-trigger all remaining tab scans (WaveTrend, VCS, Stage-2, VPA, Volume Profile)
     if not ALL_TAB_SCAN_STATUS["is_running"]:
         run_background_all_tab_scans()
+    # Auto-trigger BB Squeeze
+    if not ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
+        run_background_bb_squeeze_scan()
 
 # --- Automatic Daily Database Cache Loader ---
 # CRITICAL: Only hit the database when results are not yet in session state.
@@ -6902,7 +6905,13 @@ with tab_rsi_wt:
 with tab_bb_squeeze:
     st.markdown("### 💥 Bollinger Band Squeeze (Upward Blast Setups)")
     st.markdown("Stocks in a severe volatility squeeze (tight Bollinger Bands), indicating they may blast upward soon.")
+    col_btn, _ = st.columns([1, 2])
+    run_bb_btn = col_btn.button("🔍 Run BB Squeeze Scan", type="primary", use_container_width=True)
     
+    if run_bb_btn:
+        run_background_bb_squeeze_scan()
+        st.rerun()
+
     if st.session_state.get('bb_squeeze_results') is not None:
         bb_list = st.session_state.bb_squeeze_results
         
