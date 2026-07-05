@@ -469,7 +469,12 @@ def init_db() -> bool:
             "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS weekly_vah DOUBLE PRECISION;",
             "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS monthly_poc DOUBLE PRECISION;",
             "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS monthly_val DOUBLE PRECISION;",
-            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS monthly_vah DOUBLE PRECISION;"
+            "ALTER TABLE scanned_volume_profile ADD COLUMN IF NOT EXISTS monthly_vah DOUBLE PRECISION;",
+
+            # BB Squeeze: score, confidence, score_breakdown columns
+            "ALTER TABLE scanned_bb_squeeze ADD COLUMN IF NOT EXISTS squeeze_score INTEGER;",
+            "ALTER TABLE scanned_bb_squeeze ADD COLUMN IF NOT EXISTS confidence VARCHAR(50);",
+            "ALTER TABLE scanned_bb_squeeze ADD COLUMN IF NOT EXISTS score_breakdown TEXT;"
         ]
         for m in migrations:
             try:
@@ -2238,8 +2243,9 @@ def save_bb_squeeze_only(date_str: str, bb_results: list) -> bool:
                 (symbol, company_name, cmp, day_change_pct,
                  daily_squeeze, weekly_squeeze, monthly_squeeze,
                  daily_bb_width, weekly_bb_width, monthly_bb_width,
-                 above_50dma, market_cap_cr, scan_date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 above_50dma, market_cap_cr, scan_date,
+                 squeeze_score, confidence, score_breakdown)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (symbol, scan_date) DO UPDATE SET
                     cmp = EXCLUDED.cmp,
                     day_change_pct = EXCLUDED.day_change_pct,
@@ -2249,12 +2255,16 @@ def save_bb_squeeze_only(date_str: str, bb_results: list) -> bool:
                     daily_bb_width = EXCLUDED.daily_bb_width,
                     weekly_bb_width = EXCLUDED.weekly_bb_width,
                     monthly_bb_width = EXCLUDED.monthly_bb_width,
-                    above_50dma = EXCLUDED.above_50dma
+                    above_50dma = EXCLUDED.above_50dma,
+                    squeeze_score = EXCLUDED.squeeze_score,
+                    confidence = EXCLUDED.confidence,
+                    score_breakdown = EXCLUDED.score_breakdown
             """, (
                 r['symbol'], r.get('company_name', ''), float(r['cmp']), float(r['day_change_pct']),
                 bool(r.get('daily_squeeze', False)), bool(r.get('weekly_squeeze', False)), bool(r.get('monthly_squeeze', False)),
                 float(r.get('daily_bb_width', 0.0) or 0.0), float(r.get('weekly_bb_width', 0.0) or 0.0), float(r.get('monthly_bb_width', 0.0) or 0.0),
-                bool(r.get('above_50dma', False)), float(r.get('market_cap_cr', 0.0)), date_str
+                bool(r.get('above_50dma', False)), float(r.get('market_cap_cr', 0.0)), date_str,
+                int(r.get('squeeze_score', 0) or 0), r.get('confidence', ''), r.get('score_breakdown', '')
             ))
         conn.commit()
         cur.close()
