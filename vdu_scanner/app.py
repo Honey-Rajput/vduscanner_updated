@@ -6946,22 +6946,26 @@ with tab_bb_squeeze:
                 if df_tf.empty:
                     return df_tf
 
-                df_tf = df_tf.sort_values('squeeze_score' if has_score else tf_squeeze_col,
-                                          ascending=False)
+                if has_score:
+                    df_tf['squeeze_score'] = pd.to_numeric(df_tf['squeeze_score'], errors='coerce').fillna(0).astype(int)
+                    df_tf = df_tf.sort_values('squeeze_score', ascending=False)
+                else:
+                    df_tf = df_tf.sort_values(tf_squeeze_col, ascending=False)
 
                 out = pd.DataFrame()
-                out['Symbol']       = df_tf['symbol']
-                out['Company']      = df_tf.get('company_name', '')
-                out['CMP (₹)']      = df_tf['cmp'].round(2)
-                out['Change (%)']   = df_tf['day_change_pct'].round(2)
+                out['Symbol']       = df_tf['symbol'].values
+                out['Company']      = df_tf['company_name'].values if 'company_name' in df_tf.columns else ''
+                out['CMP (₹)']      = df_tf['cmp'].round(2).values
+                out['Change (%)']   = df_tf['day_change_pct'].round(2).values
                 if has_score:
-                    out['Score']        = df_tf['squeeze_score'].apply(lambda x: f"{x}/100")
-                    out['Confidence']   = df_tf.get('confidence', '—')
-                out['BB Width']     = df_tf[tf_width_col].round(4) if tf_width_col in df_tf.columns else '—'
-                out['Above 50 DMA'] = df_tf['above_50dma'].map({True: 'Yes', False: 'No'}) if 'above_50dma' in df_tf.columns else '—'
+                    out['Score']        = df_tf['squeeze_score'].apply(lambda x: f"{int(x)}/100" if pd.notna(x) and x > 0 else '—')
+                    out['Confidence']   = df_tf['confidence'].fillna('—').values if 'confidence' in df_tf.columns else '—'
+                out['BB Width']     = df_tf[tf_width_col].round(4).values if tf_width_col in df_tf.columns else '—'
+                out['Above 50 DMA'] = df_tf['above_50dma'].map({True: 'Yes', False: 'No'}).values if 'above_50dma' in df_tf.columns else '—'
                 if has_score and 'score_breakdown' in df_tf.columns:
-                    out['Score Breakdown'] = df_tf['score_breakdown']
+                    out['Score Breakdown'] = df_tf['score_breakdown'].fillna('').values
                 return out
+
 
             df_daily_tf   = _build_tf_df(df_bb, 'daily_squeeze',   'daily_bb_width',   'Daily')
             df_weekly_tf  = _build_tf_df(df_bb, 'weekly_squeeze',  'weekly_bb_width',  'Weekly')
@@ -6973,7 +6977,7 @@ with tab_bb_squeeze:
             w_sq   = len(df_weekly_tf)
             m_sq   = len(df_monthly_tf)
             triple = int(((df_bb['daily_squeeze']) & (df_bb['weekly_squeeze']) & (df_bb['monthly_squeeze'])).sum())
-            avg_sc = int(df_bb['squeeze_score'].mean()) if has_score else 0
+            avg_sc = int(pd.to_numeric(df_bb['squeeze_score'], errors='coerce').fillna(0).mean()) if has_score else 0
 
             mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
             mc1.metric("Total Setups", total)
