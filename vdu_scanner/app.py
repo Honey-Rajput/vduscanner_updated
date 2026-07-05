@@ -6916,7 +6916,6 @@ with tab_bb_squeeze:
         bb_list = st.session_state.bb_squeeze_results
         
         # Apply Universe Filter if needed
-        # We can just show all of them if universe is ALL NSE, otherwise filter
         if "ALL NSE" not in universe_selection.upper() and len(bb_list) > 0:
             from data_fetcher import get_index_stocks
             
@@ -6932,29 +6931,57 @@ with tab_bb_squeeze:
                 bb_list = [r for r in bb_list if r['symbol'] in valid_set]
             
         if len(bb_list) > 0:
-            # Sort by total squeezes
+            # Sort by squeeze count: monthly > weekly > daily
             def sort_key(r):
                 return (r.get('monthly_squeeze', False), r.get('weekly_squeeze', False), r.get('daily_squeeze', False))
             bb_list.sort(key=sort_key, reverse=True)
             
             df_bb = pd.DataFrame(bb_list)
             
-            # Format UI columns
-            df_bb['Daily'] = df_bb['daily_squeeze'].map({True: '🟢 Squeeze', False: '⚪'})
-            df_bb['Weekly'] = df_bb['weekly_squeeze'].map({True: '🟢 Squeeze', False: '⚪'})
-            df_bb['Monthly'] = df_bb['monthly_squeeze'].map({True: '🟢 Squeeze', False: '⚪'})
-            df_bb['CMP'] = df_bb['cmp'].apply(lambda x: f"₹{x:,.2f}")
-            df_bb['Change'] = df_bb['day_change_pct'].apply(lambda x: f"{x:+.2f}%")
+            # Summary metrics
+            total  = len(df_bb)
+            d_sq   = int(df_bb['daily_squeeze'].sum())
+            w_sq   = int(df_bb['weekly_squeeze'].sum())
+            m_sq   = int(df_bb['monthly_squeeze'].sum())
+            triple = int(((df_bb['daily_squeeze']) & (df_bb['weekly_squeeze']) & (df_bb['monthly_squeeze'])).sum())
+            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+            mc1.metric("Total Setups", total)
+            mc2.metric("Daily Squeeze", d_sq)
+            mc3.metric("Weekly Squeeze", w_sq)
+            mc4.metric("Monthly Squeeze", m_sq)
+            mc5.metric("Triple Squeeze 🔥", triple)
             
-            disp_cols = ['symbol', 'company_name', 'CMP', 'Change', 'Daily', 'Weekly', 'Monthly']
+            # Format UI columns
+            df_bb['Daily']   = df_bb['daily_squeeze'].map({True: '🟢 Squeeze', False: '⚪'})
+            df_bb['Weekly']  = df_bb['weekly_squeeze'].map({True: '🟢 Squeeze', False: '⚪'})
+            df_bb['Monthly'] = df_bb['monthly_squeeze'].map({True: '🟢 Squeeze', False: '⚪'})
+            df_bb['CMP']    = df_bb['cmp'].apply(lambda x: f"₹{x:,.2f}")
+            df_bb['Change'] = df_bb['day_change_pct'].apply(lambda x: f"{x:+.2f}%")
+            df_bb['Above 50D'] = df_bb['above_50dma'].map({True: '✅', False: '❌'}) if 'above_50dma' in df_bb.columns else '—'
+            # BB width columns (lower value = tighter squeeze)
+            if 'daily_bb_width' in df_bb.columns:
+                df_bb['D Width'] = df_bb['daily_bb_width'].apply(lambda x: f"{x:.4f}" if x else '—')
+            if 'weekly_bb_width' in df_bb.columns:
+                df_bb['W Width'] = df_bb['weekly_bb_width'].apply(lambda x: f"{x:.4f}" if x else '—')
+            if 'monthly_bb_width' in df_bb.columns:
+                df_bb['M Width'] = df_bb['monthly_bb_width'].apply(lambda x: f"{x:.4f}" if x else '—')
+            
+            disp_cols = ['symbol', 'company_name', 'CMP', 'Change', 'Above 50D',
+                         'Daily', 'D Width', 'Weekly', 'W Width', 'Monthly', 'M Width']
+            # Only include columns that actually exist in df_bb
+            disp_cols = [c for c in disp_cols if c in df_bb.columns]
             st.dataframe(df_bb[disp_cols], use_container_width=True, hide_index=True)
         else:
             if ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
                 st.info("⏳ Background scanner is analyzing BB Squeezes across Daily, Weekly, and Monthly timeframes... Please wait (~2 minutes).")
+                if st.button("🔄 Refresh BB Squeeze Status", key="refresh_bb_running_btn"):
+                    st.rerun()
             else:
-                st.info("No BB Squeeze setups found for the selected universe.")
+                st.info("✅ Scan completed — no BB Squeeze setups found for the selected universe.")
     else:
         if ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
             st.info("⏳ Background scanner is analyzing BB Squeezes across Daily, Weekly, and Monthly timeframes... Please wait (~2 minutes).")
+            if st.button("🔄 Refresh BB Squeeze Status", key="refresh_bb_none_btn"):
+                st.rerun()
         else:
-            st.info("No BB Squeeze setups found for the selected universe.")
+            st.warning("⚠️ Scan has not been run yet. Click **'Run BB Squeeze Scan'** above to start, or enable **Auto-Background Scans** in the sidebar.")
