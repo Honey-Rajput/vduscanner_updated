@@ -1241,6 +1241,7 @@ def run_background_bb_squeeze_scan(force=False):
         return
         
     ALL_TAB_SCAN_STATUS["bb_squeeze_running"] = True
+    st.session_state.bb_squeeze_running = True
     
     def thread_runner():
         import yfinance as yf
@@ -1255,6 +1256,7 @@ def run_background_bb_squeeze_scan(force=False):
                     ALL_TAB_SCAN_STATUS["bb_squeeze_results"] = cached_bb
                     st.session_state.bb_squeeze_results = cached_bb
                     ALL_TAB_SCAN_STATUS["bb_squeeze_running"] = False
+                    st.session_state.bb_squeeze_running = False
                     return
                 
             from scanner import scan_bb_squeeze
@@ -1299,10 +1301,11 @@ def run_background_bb_squeeze_scan(force=False):
             except:
                 pass
             
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"BB Squeeze background thread crashed: {e}")
         finally:
             ALL_TAB_SCAN_STATUS["bb_squeeze_running"] = False
+            st.session_state.bb_squeeze_running = False
             
     import threading
     from streamlit.runtime.scriptrunner import add_script_run_ctx
@@ -7093,14 +7096,14 @@ with tab_bb_squeeze:
                 st.dataframe(disp, use_container_width=True, hide_index=True)
 
         else:
-            if ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
+            if st.session_state.get("bb_squeeze_running", False) or ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
                 st.info("⏳ Background scanner is analyzing BB Squeezes across Daily, Weekly, and Monthly timeframes... Please wait (~2 minutes).")
                 if st.button("🔄 Refresh BB Squeeze Status", key="refresh_bb_running_btn"):
                     st.rerun()
             else:
                 st.info("✅ Scan completed — no BB Squeeze setups found for the selected universe.")
     else:
-        if ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
+        if st.session_state.get("bb_squeeze_running", False) or ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
             st.info("⏳ Background scanner is analyzing BB Squeezes across Daily, Weekly, and Monthly timeframes... Please wait (~2 minutes).")
             if st.button("🔄 Refresh BB Squeeze Status", key="refresh_bb_none_btn"):
                 st.rerun()
