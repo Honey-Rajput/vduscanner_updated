@@ -435,7 +435,9 @@ def compute_rich_analysis(df, symbol, strategy_name, base_rec_text, indicators=N
         ema_loss = loss.ewm(com=13, adjust=False).mean()
         rs = ema_gain / (ema_loss + 1e-9)
         rsi_series = 100 - (100 / (1 + rs))
+        rsi_sma = rsi_series.rolling(window=14).mean()
         rsi_val = float(rsi_series.iloc[-1])
+        rsi_sma_val = float(rsi_sma.iloc[-1]) if len(rsi_sma) > 0 else 0.0
         
         # 2. CCI (14)
         tp = (high_series + low_series + close_series) / 3
@@ -582,7 +584,7 @@ def scan_monthly_momentum(symbol: str, df_monthly: pd.DataFrame, market_cap_cr: 
     3. EMA(Close, 12) > EMA(Close, 20)
     4. ROC(6) > 20   [Rate of Change over 6 months > 20%]
     5. ROC(6) <= 80  [Not overextended — <= 80%]
-    6. RSI(14) > 55
+    6. RSI(14) > SMA(RSI, 14)
     7. RSI(14) < 85
     8. Volume > SMA(Volume, 12)
     9. Market Cap >= 3000 Crore
@@ -659,10 +661,12 @@ def scan_monthly_momentum(symbol: str, df_monthly: pd.DataFrame, market_cap_cr: 
         avg_loss = loss.ewm(com=13, adjust=False).mean()
         rs = avg_gain / (avg_loss + 1e-9)
         rsi_series = 100 - (100 / (1 + rs))
+        rsi_sma = rsi_series.rolling(window=14).mean()
         rsi_val = float(rsi_series.iloc[-1])
+        rsi_sma_val = float(rsi_sma.iloc[-1]) if len(rsi_sma) > 0 else 0.0
 
-        # Condition 6: RSI > 55
-        if not (rsi_val > 55.0):
+        # Condition 6: RSI > 14 SMA RSI
+        if not (rsi_val > rsi_sma_val):
             return None
         # Condition 7: RSI < 85
         if not (rsi_val < 85.0):
@@ -762,7 +766,7 @@ def scan_weekly_momentum(symbol: str, df_weekly: pd.DataFrame, market_cap_cr: fl
     4.  Weekly Open  > Previous Week Close   (gap-up / strong open)
     5.  Weekly CCI(20) > 90
     6.  Market Cap > 5000 Crore
-    7.  Weekly RSI(14) > 60
+    7. Weekly RSI(14) > SMA(RSI, 14)
     8.  Weekly Close > SMA(Close, 20)
     """
     if df_weekly is None or len(df_weekly) < 22:
@@ -811,14 +815,19 @@ def scan_weekly_momentum(symbol: str, df_weekly: pd.DataFrame, market_cap_cr: fl
             return None
 
         # Condition 7: RSI(14) > 60
+        # Condition 7: RSI(14) > SMA(RSI, 14)
         delta    = close.diff()
         gain     = delta.clip(lower=0)
         loss     = -delta.clip(upper=0)
         avg_gain = gain.ewm(com=13, adjust=False).mean()
         avg_loss = loss.ewm(com=13, adjust=False).mean()
         rs       = avg_gain / (avg_loss + 1e-9)
-        rsi_val  = float((100 - (100 / (1 + rs))).iloc[-1])
-        if not (rsi_val > 60.0):
+        rsi_series = 100 - (100 / (1 + rs))
+        rsi_sma = rsi_series.rolling(window=14).mean()
+        rsi_val = float(rsi_series.iloc[-1])
+        rsi_sma_val = float(rsi_sma.iloc[-1]) if len(rsi_sma) > 0 else 0.0
+        
+        if not (rsi_val > rsi_sma_val):
             return None
 
         # Condition 5: CCI(20) > 90
@@ -1279,7 +1288,9 @@ def scan_monthly_early_stage2(symbol: str, df_monthly: pd.DataFrame, max_run_up_
         ema_loss = loss.ewm(com=13, adjust=False).mean()
         rs = ema_gain / (ema_loss + 1e-9)
         rsi_series = 100 - (100 / (1 + rs))
+        rsi_sma = rsi_series.rolling(window=14).mean()
         rsi_val = float(rsi_series.iloc[-1])
+        rsi_sma_val = float(rsi_sma.iloc[-1]) if len(rsi_sma) > 0 else 0.0
         
         tp = (df_copy['High'] + df_copy['Low'] + close_series) / 3
         sma_tp = tp.rolling(window=14).mean()

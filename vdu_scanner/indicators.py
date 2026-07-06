@@ -83,6 +83,7 @@ def precompute_indicators(df: pd.DataFrame) -> dict:
     ema_loss = loss.ewm(com=13, adjust=False).mean()
     rs = ema_gain / (ema_loss + 1e-9)
     df_enriched['RSI'] = 100 - (100 / (1 + rs))
+    df_enriched['RSI_SMA14'] = df_enriched['RSI'].rolling(window=14).mean()
 
     # =========================================================================
     # 4. CCI (14)
@@ -149,6 +150,7 @@ def precompute_indicators(df: pd.DataFrame) -> dict:
 
     # RSI & CCI
     result['rsi'] = float(latest['RSI']) if not pd.isna(latest['RSI']) else None
+    result['rsi_sma14'] = float(latest['RSI_SMA14']) if not pd.isna(latest['RSI_SMA14']) else None
     result['cci'] = float(latest['CCI']) if not pd.isna(latest['CCI']) else None
 
     # WaveTrend
