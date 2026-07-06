@@ -9,7 +9,7 @@ from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 
 from config import IST_TIMEZONE, get_company_name, DRY_ZONE_MIN_DAYS, DRY_ZONE_MAX_DAYS, MIN_VOLUME_RATIO, MIN_PRICE_CHANGE
-from data_fetcher import fetch_ohlcv, get_index_stocks, fetch_ohlcv_timeframe, get_stock_sector, get_market_condition, fetch_nifty50_returns, calculate_rs_rating
+from data_fetcher import fetch_ohlcv, get_index_stocks, fetch_ohlcv_timeframe, get_stock_sector, get_market_condition, fetch_nifty50_returns, calculate_rs_rating, extract_yf_ticker_frame
 from scanner import scan_stock, scan_wt_cross, compute_rich_analysis, scan_monthly_momentum, scan_weekly_momentum, scan_vcs, scan_monthly_early_stage2, scan_vpa_trend, scan_structural_vcp
 from indicators import precompute_indicators
 
@@ -1099,28 +1099,9 @@ def run_background_momentum_scans():
                         for sym in chunk:
                             sym_ns = f"{sym}.NS"
                             try:
-                                if isinstance(df_mbulk.columns, pd.MultiIndex):
-                                    all_t_mm = df_mbulk.columns.get_level_values(1).unique().tolist()
-                                    matched_m = next((t for t in all_t_mm if t.upper() == sym_ns.upper()), None)
-                                    if matched_m is None:
-                                        continue
-                                    t_df_m = df_mbulk.xs(matched_m, axis=1, level=1).copy()
-                                else:
-                                    if len(chunk_ns) == 1:
-                                        t_df_m = df_mbulk.copy()
-                                    else:
-                                        continue
-                                
-                                req_m = ['Open', 'High', 'Low', 'Close', 'Volume']
-                                if not all(col in t_df_m.columns for col in req_m):
+                                t_df_m = extract_yf_ticker_frame(df_mbulk, sym_ns, min_rows=22)
+                                if t_df_m is None:
                                     continue
-                                t_df_m = t_df_m[req_m].dropna(subset=['Close'])
-                                t_df_m = t_df_m[t_df_m['Volume'] > 0]
-                                if len(t_df_m) < 22:
-                                    continue
-                                t_df_m = t_df_m.reset_index()
-                                t_df_m.rename(columns={t_df_m.columns[0]: 'Date'}, inplace=True)
-                                t_df_m['Date'] = pd.to_datetime(t_df_m['Date']).dt.tz_localize(None)
 
                                 res_m = scan_monthly_momentum(sym, t_df_m, market_cap_cr=mcap_map.get(sym, 0.0))
                                 if res_m is not None:
@@ -1158,28 +1139,9 @@ def run_background_momentum_scans():
                         for sym in chunk:
                             sym_ns = f"{sym}.NS"
                             try:
-                                if isinstance(df_wbulk.columns, pd.MultiIndex):
-                                    all_t_wm = df_wbulk.columns.get_level_values(1).unique().tolist()
-                                    matched_w = next((t for t in all_t_wm if t.upper() == sym_ns.upper()), None)
-                                    if matched_w is None:
-                                        continue
-                                    t_df_w = df_wbulk.xs(matched_w, axis=1, level=1).copy()
-                                else:
-                                    if len(chunk_ns) == 1:
-                                        t_df_w = df_wbulk.copy()
-                                    else:
-                                        continue
-
-                                req_w = ['Open', 'High', 'Low', 'Close', 'Volume']
-                                if not all(col in t_df_w.columns for col in req_w):
+                                t_df_w = extract_yf_ticker_frame(df_wbulk, sym_ns, min_rows=22)
+                                if t_df_w is None:
                                     continue
-                                t_df_w = t_df_w[req_w].dropna(subset=['Close'])
-                                t_df_w = t_df_w[t_df_w['Volume'] > 0]
-                                if len(t_df_w) < 22:
-                                    continue
-                                t_df_w = t_df_w.reset_index()
-                                t_df_w.rename(columns={t_df_w.columns[0]: 'Date'}, inplace=True)
-                                t_df_w['Date'] = pd.to_datetime(t_df_w['Date']).dt.tz_localize(None)
 
                                 res_w = scan_weekly_momentum(sym, t_df_w, market_cap_cr=mcap_map.get(sym, 0.0))
                                 if res_w is not None:
@@ -1276,15 +1238,11 @@ def run_background_bb_squeeze_scan(force=False):
                     for sym_ns in chunk:
                         try:
                             sym = sym_ns.replace('.NS', '')
-                            # Extract daily
-                            d_df = df_daily.xs(sym_ns, axis=1, level=1).dropna(subset=['Close']) if isinstance(df_daily.columns, pd.MultiIndex) else df_daily.dropna(subset=['Close'])
-                            if d_df.empty: continue
-                            
-                            # Extract weekly
-                            w_df = df_weekly.xs(sym_ns, axis=1, level=1).dropna(subset=['Close']) if isinstance(df_weekly.columns, pd.MultiIndex) else df_weekly.dropna(subset=['Close'])
-                            
-                            # Extract monthly
-                            m_df = df_monthly.xs(sym_ns, axis=1, level=1).dropna(subset=['Close']) if isinstance(df_monthly.columns, pd.MultiIndex) else df_monthly.dropna(subset=['Close'])
+                            d_df = extract_yf_ticker_frame(df_daily, sym_ns, min_rows=50)
+                            if d_df is None:
+                                continue
+                            w_df = extract_yf_ticker_frame(df_weekly, sym_ns, min_rows=20)
+                            m_df = extract_yf_ticker_frame(df_monthly, sym_ns, min_rows=20)
                             
                             res = scan_bb_squeeze(sym, d_df, w_df, m_df)
                             if res:
@@ -2168,31 +2126,9 @@ if st.sidebar.button("🔍 Run Scanner", width="stretch"):
                         for sym in chunk:
                             sym_ns = f"{sym.strip().upper()}.NS"
                             try:
-                                if isinstance(df_bulk.columns, pd.MultiIndex):
-                                    # yfinance 1.x multi-ticker: columns are (price_type, ticker)
-                                    # Find the ticker in level 1
-                                    all_tickers_bulk = df_bulk.columns.get_level_values(1).unique().tolist()
-                                    matched = next((t for t in all_tickers_bulk if t.upper() == sym_ns.upper()), None)
-                                    if matched is None:
-                                        continue
-                                    # Extract slice for this ticker across all price types
-                                    ticker_df = df_bulk.xs(matched, axis=1, level=1).copy()
-                                else:
-                                    # Single ticker download (fallback)
-                                    if len(chunk_ns) == 1:
-                                        ticker_df = df_bulk.copy()
-                                    else:
-                                        continue
-
-                                required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-                                if all(col in ticker_df.columns for col in required_cols):
-                                    ticker_df = ticker_df[required_cols].dropna(subset=['Close'])
-                                    ticker_df = ticker_df[ticker_df['Volume'] > 0]
-                                    if not ticker_df.empty:
-                                        ticker_df = ticker_df.reset_index()
-                                        ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
-                                        ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
-                                        chunk_data[sym.strip().upper()] = ticker_df
+                                ticker_df = extract_yf_ticker_frame(df_bulk, sym_ns)
+                                if ticker_df is not None:
+                                    chunk_data[sym.strip().upper()] = ticker_df
                             except Exception as sym_ex:
                                 print(f"Error extracting {sym_ns} from bulk download: {sym_ex}")
                     except Exception as chunk_ex:
@@ -5431,17 +5367,8 @@ with tab_stage2:
                     if not df_s2.empty:
                         for sym in chunk:
                             try:
-                                if isinstance(df_s2.columns, pd.MultiIndex):
-                                    all_tkrs = df_s2.columns.get_level_values(1).unique().tolist()
-                                    matched_t = next((t for t in all_tkrs if t.upper() == f"{sym}.NS".upper()), None)
-                                    if not matched_t: continue
-                                    t_df = df_s2.xs(matched_t, axis=1, level=1).dropna(subset=['Close'])
-                                else:
-                                    t_df = df_s2.dropna(subset=['Close'])
-                                    
-                                if not t_df.empty and len(t_df) >= 24:
-                                    t_df = t_df.reset_index()
-                                    t_df.rename(columns={t_df.columns[0]: 'Date'}, inplace=True)
+                                t_df = extract_yf_ticker_frame(df_s2, f"{sym}.NS", min_rows=24)
+                                if t_df is not None:
                                     res = scan_monthly_early_stage2(sym, t_df, max_run_up_pct=s2_max_runup)
                                     if res:
                                         chunk_res.append(res)
@@ -5567,29 +5494,11 @@ with tab_vpa:
                     chunk_filtered = []
                     try:
                         df_bulk = yf.download(tickers=chunk, period="5y", interval="1d", progress=False, threads=False)
-                        if isinstance(df_bulk.columns, pd.MultiIndex):
-                            for sym in chunk:
-                                try:
-                                    if 'Close' in df_bulk.columns.levels[0]:
-                                        ticker_df = df_bulk.xs(sym, axis=1, level=1).copy()
-                                        ticker_df = ticker_df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-                                        if len(ticker_df) >= 45 and ticker_df['Close'].iloc[-1] > 100.0:
-                                            ticker_df = ticker_df.reset_index()
-                                            ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
-                                            ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
-                                            chunk_data[sym] = ticker_df
-                                            chunk_filtered.append(sym)
-                                except Exception:
-                                    pass
-                        else:
-                            if len(chunk) == 1 and not df_bulk.empty and 'Close' in df_bulk:
-                                ticker_df = df_bulk[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-                                if len(ticker_df) >= 45 and ticker_df['Close'].iloc[-1] > 100.0:
-                                    ticker_df = ticker_df.reset_index()
-                                    ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
-                                    ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
-                                    chunk_data[chunk[0]] = ticker_df
-                                    chunk_filtered.append(chunk[0])
+                        for sym in chunk:
+                            ticker_df = extract_yf_ticker_frame(df_bulk, sym, min_rows=45)
+                            if ticker_df is not None and ticker_df['Close'].iloc[-1] > 100.0:
+                                chunk_data[sym] = ticker_df
+                                chunk_filtered.append(sym)
                     except Exception:
                         pass
                     return chunk_data, chunk_filtered
@@ -5935,27 +5844,10 @@ with tab_volprofile:
                     chunk_data = {}
                     try:
                         df_bulk = yf.download(tickers=chunk, period="2y", interval="1d", progress=False, threads=False)
-                        if isinstance(df_bulk.columns, pd.MultiIndex):
-                            for sym in chunk:
-                                try:
-                                    if 'Close' in df_bulk.columns.levels[0]:
-                                        ticker_df = df_bulk.xs(sym, axis=1, level=1).copy()
-                                        ticker_df = ticker_df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-                                        if len(ticker_df) >= 100:
-                                            ticker_df = ticker_df.reset_index()
-                                            ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
-                                            ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
-                                            chunk_data[sym] = ticker_df
-                                except Exception:
-                                    pass
-                        else:
-                            if len(chunk) == 1 and not df_bulk.empty and 'Close' in df_bulk:
-                                ticker_df = df_bulk[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-                                if len(ticker_df) >= 100:
-                                    ticker_df = ticker_df.reset_index()
-                                    ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
-                                    ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
-                                    chunk_data[chunk[0]] = ticker_df
+                        for sym in chunk:
+                            ticker_df = extract_yf_ticker_frame(df_bulk, sym, min_rows=100)
+                            if ticker_df is not None:
+                                chunk_data[sym] = ticker_df
                     except Exception:
                         pass
                     return chunk_data

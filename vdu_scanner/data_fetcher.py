@@ -61,6 +61,52 @@ def _flatten_yf_dataframe(df: pd.DataFrame, symbol_ns: str = None) -> pd.DataFra
     return df_clean
 
 
+def extract_yf_ticker_frame(
+    df: pd.DataFrame,
+    symbol_ns: str,
+    keep_zero_volume: bool = False,
+    min_rows: int = 1,
+) -> pd.DataFrame | None:
+    """
+    Extracts and normalizes a single ticker from a yfinance bulk download.
+    yfinance 1.x returns MultiIndex columns as (price_field, ticker) for
+    multi-ticker requests; this helper keeps that parsing in one fast path.
+    """
+    if df is None or df.empty:
+        return None
+
+    try:
+        if isinstance(df.columns, pd.MultiIndex):
+            tickers = df.columns.get_level_values(1).unique()
+            symbol_upper = symbol_ns.upper()
+            matched = next((t for t in tickers if str(t).upper() == symbol_upper), None)
+            if matched is None:
+                return None
+            ticker_df = df.xs(matched, axis=1, level=1).copy()
+        else:
+            ticker_df = df.copy()
+
+        if 'Price' in ticker_df.columns and 'Close' not in ticker_df.columns:
+            ticker_df.rename(columns={'Price': 'Close'}, inplace=True)
+
+        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        if not all(col in ticker_df.columns for col in required_cols):
+            return None
+
+        ticker_df = ticker_df[required_cols].copy().dropna(subset=['Close'])
+        if not keep_zero_volume:
+            ticker_df = ticker_df[ticker_df['Volume'] > 0]
+        if len(ticker_df) < min_rows:
+            return None
+
+        ticker_df = ticker_df.reset_index()
+        ticker_df.rename(columns={ticker_df.columns[0]: 'Date'}, inplace=True)
+        ticker_df['Date'] = pd.to_datetime(ticker_df['Date']).dt.tz_localize(None)
+        return ticker_df
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_ohlcv(symbol: str) -> pd.DataFrame | None:
     """
