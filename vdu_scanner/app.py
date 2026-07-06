@@ -533,7 +533,6 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
         "Extension %": lambda x: float(x.get('extension') or 0.0),
         "7M SMA": lambda x: float(x.get('sma7') or 0.0),
         "Squeeze Score": lambda x: float(x.get('squeeze_score') or 0.0),
-        "VCS Score": lambda x: float(x.get('vcs_score') or 0.0),
         "Contractions": lambda x: int(x.get('contractions') or 0),
         "VPA Score": lambda x: float(x.get('trend_score') or x.get('score') or 0.0),
         "5d Range": lambda x: float(x.get('range_5d') or 0.0),
@@ -558,16 +557,10 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
     # 2. Determine active sort column and direction from session state
     if strategy_type == "vdu_breakout":
         default_col = "Score"
-    elif strategy_type == "gapup":
-        default_col = "Gap %"
     elif strategy_type == "wavetrend":
         default_col = "WT1"
     elif strategy_type == "minervini":
         default_col = "Remaining Target %"
-    elif strategy_type == "vcs":
-        default_col = "VCS Score"
-    elif strategy_type == "struct_vcp":
-        default_col = "Contractions"
     elif strategy_type == "vpa":
         default_col = "VPA Score"
     elif strategy_type == "stage2":
@@ -605,10 +598,10 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
             score_val = float(r.get('signal_strength', 50.0))
         elif strategy_type == "stage2":
             score_val = float(r.get('score', 50.0))
-        elif strategy_type == "gapup":
-            score_val = float(round(r.get('gap_pct', 0.0) * 10, 1))
         elif strategy_type == "wavetrend":
             score_val = float(abs(r.get('wt_value', 50.0)))
+        elif strategy_type == "vpa":
+            score_val = float(r.get('trend_score', r.get('score', 50.0)))
         else:
             score_val = 50.0
 
@@ -646,31 +639,6 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
             score_badge = get_signal_badge_html(r.get("signal_strength", 0.0))
             cells.append(f'<td style="padding: 10px 12px;">{score_badge}</td>')
 
-        elif strategy_type == "gapup":
-            cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1;">₹{r.get("prev_close", 0.0):,.2f}</td>')
-            cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1;">₹{r.get("open_price", 0.0):,.2f}</td>')
-            cells.append(f'<td style="padding: 10px 12px; color: #00e676; font-weight: 600;">+{r.get("gap_pct", 0.0):.2f}%</td>')
-            chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
-            cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
-            cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1;">{int(r.get("volume") or r.get("today_volume") or 0):,}</td>')
-
-        elif strategy_type in ["above_ma", "support_ma", "crossover_ma"]:
-            chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
-            cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
-
-            if strategy_type == "above_ma":
-                d20 = r.get('dist_20sma_pct', 0.0)
-                d50 = r.get('dist_50sma_pct', 0.0)
-                cells.append(f'<td style="padding: 10px 12px; font-size:0.85rem;"><span style="color:#00e676;">20: +{d20:.1f}%</span><br><span style="color:#29b6f6;">50: +{d50:.1f}%</span></td>')
-            elif strategy_type == "support_ma":
-                d65 = r.get('dist_65sma_pct', 0.0)
-                color = "#00e676" if d65 >= 0 else "#ef4444"
-                cells.append(f'<td style="padding: 10px 12px; font-size:0.85rem; color:{color};">65 SMA: {d65:+.1f}%</td>')
-            elif strategy_type == "crossover_ma":
-                d50 = r.get('dist_50sma_pct', 0.0)
-                d200 = r.get('dist_200sma_pct', 0.0)
-                cells.append(f'<td style="padding: 10px 12px; font-size:0.85rem;"><span style="color:#29b6f6;">50: {d50:+.1f}%</span><br><span style="color:#ffa000;">200: {d200:+.1f}%</span></td>')
-
         elif strategy_type == "minervini":
             chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
             cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
@@ -700,19 +668,6 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
             cells.append(f'<td style="padding: 10px 12px; color: {diff_color}; font-weight: 600;">{diff_val:+.1f}</td>')
             sig_badge = '<span class="custom-badge badge-green" style="font-weight:600; padding: 2px 6px; border-radius: 4px;">🟢 BUY</span>' if r.get('buy_signal') else '<span class="custom-badge badge-grey" style="padding: 2px 6px; border-radius: 4px;">Oversold</span>'
             cells.append(f'<td style="padding: 10px 12px;">{sig_badge}</td>')
-
-        elif strategy_type == "vcs":
-            chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
-            cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
-            score_val = r.get('vcs_score', 0.0)
-            cells.append(f'<td style="padding: 10px 12px; color: #29b6f6; font-weight: 700;">{score_val:.2f}</td>')
-
-        elif strategy_type == "struct_vcp":
-            chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
-            cells.append(f'<td style="padding: 10px 12px;">{chg_badge}</td>')
-            cells.append(f'<td style="padding: 10px 12px; color: #00e676; font-weight: 700;">{r.get("contractions", 0)}T</td>')
-            cells.append(f'<td style="padding: 10px 12px; color: #cbd5e1;">{r.get("vol_50d", 0):,.0f}</td>')
-            cells.append(f'<td style="padding: 10px 12px; color: #ffa000;">₹{r.get("pivot_price", 0.0):,.2f}</td>')
 
         elif strategy_type == "vpa":
             chg_badge = get_day_change_badge_html(r.get('day_change_pct', 0.0))
@@ -748,18 +703,10 @@ def render_unified_strategy_table(results_list: list, strategy_type: str, key_pr
     headers = ["Watchlist", "Symbol", "Sector", "CMP"]
     if strategy_type == "vdu_breakout":
         headers.extend(["Day Chg %", "Volume", "Dry Avg Vol", "Vol Ratio", "Dry Days", "Spikes", "Score"])
-    elif strategy_type == "gapup":
-        headers.extend(["Prev Close", "Open", "Gap %", "Day Chg %", "Volume"])
-    elif strategy_type in ["above_ma", "support_ma", "crossover_ma"]:
-        headers.extend(["Day Chg %", "Dist to SMA"])
     elif strategy_type == "minervini":
         headers.extend(["Day Chg %", "Run Up 200 SMA", "Run Up 52w Low", "Stage Type", "Remaining Target %"])
     elif strategy_type == "wavetrend":
         headers.extend(["Day Chg %", "WT1", "WT2", "WT Diff", "Signal"])
-    elif strategy_type == "vcs":
-        headers.extend(["Day Chg %", "VCS Score"])
-    elif strategy_type == "struct_vcp":
-        headers.extend(["Day Chg %", "Contractions", "Avg Vol", "Pivot Price"])
     elif strategy_type == "vpa":
         headers.extend(["Day Chg %", "VPA Score", "Pattern", "Trend"])
     elif strategy_type == "stage2":
@@ -872,8 +819,6 @@ def render_quick_trade_board(results_list: list, key_prefix: str):
 
 
 # --- Initialize Session State ---
-if 'bb_squeeze_results' not in st.session_state:
-    st.session_state.bb_squeeze_results = None
 if 'scan_results' not in st.session_state:
     st.session_state.scan_results = None
 if 'total_scanned' not in st.session_state:
@@ -892,24 +837,12 @@ if 'vpa_results' not in st.session_state:
     st.session_state.vpa_results = []
 if 'vp_results' not in st.session_state:
     st.session_state.vp_results = []
-if 'gapup_results' not in st.session_state:
-    st.session_state.gapup_results = None
-if 'above_ma_results' not in st.session_state:
-    st.session_state.above_ma_results = None
-if 'support_ma_results' not in st.session_state:
-    st.session_state.support_ma_results = None
-if 'crossover_ma_results' not in st.session_state:
-    st.session_state.crossover_ma_results = None
 if 'wt_results' not in st.session_state:
     st.session_state.wt_results = None
 if 'wt_results_by_tf' not in st.session_state:
     st.session_state.wt_results_by_tf = {}
 if 'minervini_results' not in st.session_state:
     st.session_state.minervini_results = None
-if 'vcs_results' not in st.session_state:
-    st.session_state.vcs_results = None
-if 'structural_vcp_results' not in st.session_state:
-    st.session_state.structural_vcp_results = None
 # Initialize global status dictionary if not present (shared across all threads/sessions)
 if "MOMENTUM_SCAN_STATUS" not in globals():
     # Removed redundant global statement
@@ -929,7 +862,6 @@ if "ALL_TAB_SCAN_STATUS" not in globals():
         "status_text": "Not started",
         "progress": 0.0,
         "wt_results": None,
-        "vcs_results": None,
         "stage2_results": None,
         "vpa_results": None,
         "vp_results": None,
@@ -1194,87 +1126,9 @@ def run_background_momentum_scans():
     t.start()
 
 
-def run_background_bb_squeeze_scan(force=False):
-    if ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
-        return
-
-    is_already_running = any(t.name == "Background_BB_Squeeze" for t in __import__('threading').enumerate())
-    if is_already_running:
-        return
-
-    ALL_TAB_SCAN_STATUS["bb_squeeze_running"] = True
-    st.session_state.bb_squeeze_running = True
-
-    def thread_runner():
-        import yfinance as yf
-        import pandas as pd
-        import concurrent.futures
-
-        try:
-            today_str = get_market_date()
-            if not force:
-                cached_bb = database.get_cached_bb_squeeze(today_str)
-                if cached_bb and len(cached_bb) > 0:
-                    ALL_TAB_SCAN_STATUS["bb_squeeze_results"] = cached_bb
-                    st.session_state.bb_squeeze_results = cached_bb
-                    ALL_TAB_SCAN_STATUS["bb_squeeze_running"] = False
-                    st.session_state.bb_squeeze_running = False
-                    return
-
-            from scanner import scan_bb_squeeze
-            raw_symbols = get_index_stocks("ALL NSE")
-            symbols_to_scan = [s if s.endswith('.NS') else f"{s}.NS" for s in raw_symbols if str(s).strip()]
-
-            bb_results = []
-            chunk_size = 100
-            chunks = [symbols_to_scan[i:i+chunk_size] for i in range(0, len(symbols_to_scan), chunk_size)]
-
-            for chunk in chunks:
-                try:
-                    df_daily = yf.download(tickers=chunk, period="1y", interval="1d", progress=False, threads=False)
-                    df_weekly = yf.download(tickers=chunk, period="2y", interval="1wk", progress=False, threads=False)
-                    df_monthly = yf.download(tickers=chunk, period="5y", interval="1mo", progress=False, threads=False)
-
-                    for sym_ns in chunk:
-                        try:
-                            sym = sym_ns.replace('.NS', '')
-                            d_df = extract_yf_ticker_frame(df_daily, sym_ns, min_rows=50)
-                            if d_df is None:
-                                continue
-                            w_df = extract_yf_ticker_frame(df_weekly, sym_ns, min_rows=20)
-                            m_df = extract_yf_ticker_frame(df_monthly, sym_ns, min_rows=20)
-
-                            res = scan_bb_squeeze(sym, d_df, w_df, m_df)
-                            if res:
-                                bb_results.append(res)
-                        except Exception:
-                            pass
-                except Exception as chunk_ex:
-                    pass
-
-            ALL_TAB_SCAN_STATUS["bb_squeeze_results"] = bb_results
-            st.session_state.bb_squeeze_results = bb_results
-            try:
-                database.save_bb_squeeze_only(today_str, bb_results)
-            except:
-                pass
-
-        except Exception as e:
-            print(f"BB Squeeze background thread crashed: {e}")
-        finally:
-            ALL_TAB_SCAN_STATUS["bb_squeeze_running"] = False
-            st.session_state.bb_squeeze_running = False
-
-    import threading
-    from streamlit.runtime.scriptrunner import add_script_run_ctx
-    t = threading.Thread(target=thread_runner, name="Background_BB_Squeeze", daemon=True)
-    add_script_run_ctx(t)
-    t.start()
-
-
 def run_background_all_tab_scans():
     """
-    Runs WaveTrend, VCS, Stage-2, VPA and Volume Profile scanners sequentially
+    Runs WaveTrend, Stage-2, VPA and Volume Profile scanners sequentially
     in a background daemon thread when Enable Auto-Background Scans is checked.
     Skips any scanner whose results are already cached in the database for today.
     """
@@ -1367,73 +1221,12 @@ def run_background_all_tab_scans():
                 print(f"[BG All-Tab] WaveTrend scan error: {wt_err}")
 
             # ----------------------------------------------------------------
-            # 2/5: VCS Scan (Daily, default parameters)
-            # ----------------------------------------------------------------
-            ALL_TAB_SCAN_STATUS["current_scanner"] = "VCS"
-            ALL_TAB_SCAN_STATUS["status_text"] = "Step 2/5 - Running VCS scan..."
-            ALL_TAB_SCAN_STATUS["progress"] = 0.2
-            print("[BG All-Tab] Step 2/5: VCS scan")
-
-            try:
-                cached_vcs = database.get_cached_vcs(today_str)
-                if cached_vcs and len(cached_vcs) > 0:
-                    ALL_TAB_SCAN_STATUS["vcs_results"] = cached_vcs
-                    print(f"[BG All-Tab] VCS: Loaded {len(cached_vcs)} results from DB cache. Skipping scan.")
-                else:
-                    from scanner import scan_vcs
-                    from data_fetcher import get_index_stocks
-                    raw_symbols = get_index_stocks("ALL NSE")
-                    symbols_to_scan = [s if s.endswith('.NS') else f"{s}.NS" for s in raw_symbols if str(s).strip()]
-
-                    custom_vcs_results = []
-                    chunk_size = 50
-                    chunks = [symbols_to_scan[i:i+chunk_size] for i in range(0, len(symbols_to_scan), chunk_size)]
-
-                    for c_idx, chunk in enumerate(chunks):
-                        ALL_TAB_SCAN_STATUS["progress"] = 0.2 + (c_idx / len(chunks)) * 0.2  # 20-40%
-                        try:
-                            bulk_df = yf.download(tickers=chunk, period="1y", interval="1d", progress=False, threads=False)
-                            if not bulk_df.empty:
-                                for sym_ns in chunk:
-                                    try:
-                                        sym = sym_ns.replace('.NS', '')
-                                        if isinstance(bulk_df.columns, pd.MultiIndex):
-                                            all_tkrs = bulk_df.columns.get_level_values(1).unique().tolist()
-                                            matched_t = next((t for t in all_tkrs if t.upper() == sym_ns.upper()), None)
-                                            if not matched_t:
-                                                continue
-                                            t_df = bulk_df.xs(matched_t, axis=1, level=1).dropna(subset=['Close'])
-                                        else:
-                                            t_df = bulk_df.dropna(subset=['Close'])
-                                        if not t_df.empty and len(t_df) >= 63:
-                                            t_df = t_df.reset_index()
-                                            t_df.rename(columns={t_df.columns[0]: 'Date'}, inplace=True)
-                                            res = scan_vcs(sym, t_df)
-                                            if res:
-                                                res['Timeframe'] = "Daily (1d)"
-                                                res['Action'] = res.get('recommendation', 'Wait')
-                                                custom_vcs_results.append(res)
-                                    except Exception:
-                                        pass
-                        except Exception as chunk_ex:
-                            print(f"[BG All-Tab] VCS chunk {c_idx} error: {chunk_ex}")
-
-                    ALL_TAB_SCAN_STATUS["vcs_results"] = custom_vcs_results
-                    try:
-                        database.save_vcs_only(today_str, custom_vcs_results)
-                    except Exception:
-                        pass
-                    print(f"[BG All-Tab] VCS scan complete: {len(custom_vcs_results)} results")
-            except Exception as vcs_err:
-                print(f"[BG All-Tab] VCS scan error: {vcs_err}")
-
-            # ----------------------------------------------------------------
-            # 3/5: Stage-2 Scan (Monthly, max run-up 20%)
+            # 2/4: Stage-2 Scan (Monthly, max run-up 20%)
             # ----------------------------------------------------------------
             ALL_TAB_SCAN_STATUS["current_scanner"] = "Stage-2"
-            ALL_TAB_SCAN_STATUS["status_text"] = "Step 3/5 - Running Stage-2 scan..."
+            ALL_TAB_SCAN_STATUS["status_text"] = "Step 2/4 - Running Stage-2 scan..."
             ALL_TAB_SCAN_STATUS["progress"] = 0.4
-            print("[BG All-Tab] Step 3/5: Stage-2 scan")
+            print("[BG All-Tab] Step 2/4: Stage-2 scan")
 
             try:
                 cached_s2 = database.get_cached_stage2(today_str)
@@ -1694,12 +1487,6 @@ enable_background_scans = st.sidebar.checkbox("Enable Auto-Background Scans", va
 if enable_background_scans:
     if (st.session_state.monthly_momentum_results is None or st.session_state.weekly_momentum_results is None) and not MOMENTUM_SCAN_STATUS["is_running"]:
         run_background_momentum_scans()
-    # Auto-trigger all remaining tab scans (WaveTrend, VCS, Stage-2, VPA, Volume Profile)
-    if not ALL_TAB_SCAN_STATUS["is_running"]:
-        run_background_all_tab_scans()
-    # Auto-trigger BB Squeeze
-    if not ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
-        run_background_bb_squeeze_scan()
 
 # --- Automatic Daily Database Cache Loader ---
 # CRITICAL: Only hit the database when results are not yet in session state.
@@ -1718,22 +1505,6 @@ if st.session_state.scan_results is None and not st.session_state.get('db_cache_
                 except Exception:
                     st.session_state.scan_results = []
                 try:
-                    st.session_state.gapup_results = database.get_cached_gapups(latest_date_str)
-                except Exception:
-                    st.session_state.gapup_results = []
-                try:
-                    st.session_state.above_ma_results = database.get_cached_trend_setups(latest_date_str, 'above_ma')
-                except Exception:
-                    st.session_state.above_ma_results = []
-                try:
-                    st.session_state.support_ma_results = database.get_cached_trend_setups(latest_date_str, 'support_ma')
-                except Exception:
-                    st.session_state.support_ma_results = []
-                try:
-                    st.session_state.crossover_ma_results = database.get_cached_trend_setups(latest_date_str, 'crossover_ma')
-                except Exception:
-                    st.session_state.crossover_ma_results = []
-                try:
                     st.session_state.wt_results = database.get_cached_wt_cross(latest_date_str)
                     st.session_state.wt_results_by_tf = {"Daily_-40.0": st.session_state.wt_results, "Daily": st.session_state.wt_results}
                 except Exception:
@@ -1744,10 +1515,6 @@ if st.session_state.scan_results is None and not st.session_state.get('db_cache_
                 except Exception:
                     st.session_state.minervini_results = []
                 try:
-                    st.session_state.vcs_results = database.get_cached_vcs(latest_date_str)
-                except Exception:
-                    st.session_state.vcs_results = []
-                try:
                     st.session_state.vpa_results = database.get_cached_vpa(latest_date_str)
                 except Exception:
                     st.session_state.vpa_results = []
@@ -1755,10 +1522,6 @@ if st.session_state.scan_results is None and not st.session_state.get('db_cache_
                     st.session_state.vp_results = database.get_cached_volume_profile(latest_date_str)
                 except Exception:
                     st.session_state.vp_results = []
-                try:
-                    st.session_state.bb_squeeze_results = database.get_cached_bb_squeeze(latest_date_str)
-                except Exception:
-                    st.session_state.bb_squeeze_results = []
 
                 st.session_state.total_scanned = cached_log.get('total_scanned', 0)
                 st.session_state.failed_count = 0
@@ -2076,14 +1839,8 @@ if st.sidebar.button("🔍 Run Scanner", width="stretch"):
         n_stocks = len(scan_symbols)
         failed_count = 0
         flagged_list = []
-        gapup_list = []
-        structural_vcp_list = []
-        above_ma_list = []
-        support_ma_list = []
-        crossover_ma_list = []
         minervini_list = []
         wt_list = []
-        vcs_list = []
         vpa_list = []
 
         # Unpack manual dry constraints from the sidebar range slider
@@ -2163,16 +1920,10 @@ if st.sidebar.button("🔍 Run Scanner", width="stretch"):
 
             res = {
                 "failed": False,
-                "gapup": None,
-                "above_ma": None,
-                "support_ma": None,
-                "crossover_ma": None,
                 "minervini": None,
                 "flagged": None,
 
                 "wt": None,
-                "vcs": None,
-                "structural_vcp": None,
                 "vpa": None
             }
             if df is None or len(df) < 5:
@@ -2222,101 +1973,8 @@ if st.sidebar.button("🔍 Run Scanner", width="stretch"):
             today_open_val = float(df['Open'].iloc[-1])
             today_close_val = float(df['Close'].iloc[-1])
             yesterday_close_val = float(df['Close'].iloc[-2]) if len(df) >= 2 else today_open_val
-            if today_open_val > yesterday_close_val and today_close_val > yesterday_close_val and today_close_val >= (today_open_val * 0.97):
-                gap_pct = (today_open_val - yesterday_close_val) / yesterday_close_val * 100
-                if gap_pct >= 8.0:
-                    target_multiplier = 1.04; target_pct_str = "+4.0%"
-                elif gap_pct >= 5.0:
-                    target_multiplier = 1.06; target_pct_str = "+6.0%"
-                else:
-                    target_multiplier = 1.10; target_pct_str = "+10.0%"
-
-                gap_buy_price = round(min(today_open_val, yesterday_close_val) * 0.99, 2)  # Support = gap base (previous close)
-                gap_exit_price = round(yesterday_close_val * 0.97, 2)  # Stop below gap fill level
-                gap_target_price = round(today_close_val * target_multiplier, 2)
-                gap_confidence = "High (Gap-Up Momentum)" if gap_pct > 3.0 else "Medium (Gap-Up)"
-                base_gap_rec = (f"Bullish gap-up breakout of {gap_pct:.2f}% on strong momentum. Buy near support ₹{gap_buy_price:.2f} "
-                                f"with a stop loss below today's open price at ₹{gap_exit_price:.2f} "
-                                f"targeting dynamic swing target ₹{gap_target_price:.2f} ({target_pct_str}).")
-                gap_recommendation = compute_rich_analysis(df, sym, "Gap-Up", base_gap_rec, indicators=ind)
-                res["gapup"] = {
-                    "symbol": sym.strip().upper(), "company_name": get_company_name(sym),
-                    "prev_close": yesterday_close_val, "open_price": today_open_val, "cmp": today_close_val,
-                    "gap_pct": round(gap_pct, 2), "volume": int(df['Volume'].iloc[-1]),
-                    "day_change_pct": round(((today_close_val - yesterday_close_val) / yesterday_close_val * 100), 2),
-                    "buy_price": gap_buy_price, "exit_price": gap_exit_price, "target_price": gap_target_price,
-                    "confidence": gap_confidence, "recommendation": gap_recommendation
-                }
-
             # Use pre-computed SMAs from indicators — no need to recalculate
             df_ma = df  # Already has SMA20, SMA50, SMA65, SMA150, SMA200 from precompute_indicators()
-
-            if len(df_ma) >= 200:
-                today_row = df_ma.iloc[-1]; yesterday_row = df_ma.iloc[-2]
-                c_val = float(today_row['Close']); l_val = float(today_row['Low'])
-                sma20 = float(today_row['SMA20']); sma50 = float(today_row['SMA50'])
-                sma65 = float(today_row['SMA65']); sma150 = float(today_row['SMA150'])
-                sma200 = float(today_row['SMA200'])
-
-                if c_val > sma20 and c_val > sma50:
-                    above_buy_price = round(sma20, 2)  # Support = 20 SMA (nearest MA support)
-                    above_exit_price = round(sma50 * 0.97, 2)
-                    above_target_price = round(today_close_val * 1.12, 2)
-                    above_confidence = "High (Uptrend)" if sma20 > sma50 and sma50 > sma200 else "Medium-High (Uptrend)"
-                    base_above_rec = (f"Strong medium-term uptrend. Close above 20 SMA & 50 SMA. Buy near support ₹{above_buy_price:.2f} (20 SMA) "
-                                      f"with stop below 50 SMA support at ₹{above_exit_price:.2f} targeting momentum target ₹{above_target_price:.2f}.")
-                    res["above_ma"] = {
-                        "symbol": sym.strip().upper(), "company_name": get_company_name(sym), "cmp": today_close_val,
-                        "day_change_pct": round(((today_close_val - yesterday_row['Close']) / yesterday_row['Close'] * 100), 2),
-                        "dist_20sma_pct": round((today_close_val - sma20) / sma20 * 100, 2),
-                        "dist_50sma_pct": round((today_close_val - sma50) / sma50 * 100, 2),
-                        "setup_type": "above_ma", "buy_price": above_buy_price, "exit_price": above_exit_price,
-                        "target_price": above_target_price, "confidence": above_confidence,
-                        "recommendation": compute_rich_analysis(df_ma, sym, "Above 20/50 SMA", base_above_rec, indicators=ind)
-                    }
-
-                yesterday_l = float(yesterday_row['Low']); yesterday_sma65 = float(yesterday_row['SMA65'])
-                tested_today = l_val <= sma65 * 1.01; tested_yesterday = yesterday_l <= yesterday_sma65 * 1.01
-                o_val = float(today_row['Open']); yesterday_c = float(yesterday_row['Close'])
-                is_green_candle = c_val > o_val; is_up_move = c_val > yesterday_c; holds_above = c_val > sma65
-
-                if (tested_today or tested_yesterday) and holds_above and is_green_candle and is_up_move:
-                    support_buy_price = round(sma65, 2)  # Support = 65 SMA (the actual support level)
-                    support_exit_price = round(sma65 * 0.97, 2)
-                    support_target_price = round(today_close_val * 1.15, 2)
-                    support_confidence = "High (Pullback Support)" if today_close_val > yesterday_row['Close'] else "Medium (Pullback Support)"
-                    base_support_rec = (f"Institutional pullback testing critical 65 SMA support (₹{sma65:.2f}). "
-                                        f"Buy near support ₹{support_buy_price:.2f} (65 SMA) with tight stop just below SMA at ₹{support_exit_price:.2f} targeting bounce to ₹{support_target_price:.2f}.")
-                    res["support_ma"] = {
-                        "symbol": sym.strip().upper(), "company_name": get_company_name(sym), "cmp": today_close_val,
-                        "day_change_pct": round(((today_close_val - yesterday_row['Close']) / yesterday_row['Close'] * 100), 2),
-                        "dist_65sma_pct": round((today_close_val - sma65) / sma65 * 100, 2), "setup_type": "support_ma",
-                        "buy_price": support_buy_price, "exit_price": support_exit_price, "target_price": support_target_price,
-                        "confidence": support_confidence, "recommendation": compute_rich_analysis(df_ma, sym, "65 SMA Support", base_support_rec, indicators=ind)
-                    }
-
-                crossed_golden = (yesterday_row['SMA50'] <= yesterday_row['SMA200']) and (today_row['SMA50'] > today_row['SMA200'])
-                crossed_150 = (yesterday_row['SMA50'] <= yesterday_row['SMA150']) and (today_row['SMA50'] > today_row['SMA150'])
-                price_crossed_50 = (yesterday_row['Close'] <= yesterday_row['SMA50']) and (today_row['Close'] > today_row['SMA50'])
-                price_crossed_150 = (yesterday_row['Close'] <= yesterday_row['SMA150']) and (today_row['Close'] > today_row['SMA150'])
-                price_crossed_200 = (yesterday_row['Close'] <= yesterday_row['SMA200']) and (today_row['Close'] > today_row['SMA200'])
-
-                if crossed_golden or crossed_150 or price_crossed_50 or price_crossed_150 or price_crossed_200:
-                    cross_support = max(s for s in [sma50, sma150, sma200] if s < c_val) if any(s < c_val for s in [sma50, sma150, sma200]) else c_val * 0.94
-                    cross_buy_price = round(cross_support * 1.01, 2)  # Support = nearest MA below price
-                    cross_exit_price = round(cross_support * 0.96, 2)
-                    cross_target_price = round(today_close_val * 1.18, 2)
-                    cross_confidence = "High (Golden Cross)" if crossed_golden else "Medium-High (Crossover)"
-                    base_cross_rec = (f"Technical moving average crossover signal! Buy near support ₹{cross_buy_price:.2f} "
-                                      f"to ride the emerging uptrend. Set stop loss at ₹{cross_exit_price:.2f} targeting swing high ₹{cross_target_price:.2f}.")
-                    res["crossover_ma"] = {
-                        "symbol": sym.strip().upper(), "company_name": get_company_name(sym), "cmp": today_close_val,
-                        "day_change_pct": round(((today_close_val - yesterday_row['Close']) / yesterday_row['Close'] * 100), 2),
-                        "dist_50sma_pct": round((today_close_val - sma50) / sma50 * 100, 2),
-                        "dist_200sma_pct": round((today_close_val - sma200) / sma200 * 100, 2), "setup_type": "crossover_ma",
-                        "buy_price": cross_buy_price, "exit_price": cross_exit_price, "target_price": cross_target_price,
-                        "confidence": cross_confidence, "recommendation": compute_rich_analysis(df_ma, sym, "MA Crossover", base_cross_rec, indicators=ind)
-                    }
 
             if len(df_ma) >= 250:
                 today_row = df_ma.iloc[-1]; yesterday_row = df_ma.iloc[-2]; c_val = float(today_row['Close'])
@@ -2364,8 +2022,6 @@ if st.sidebar.button("🔍 Run Scanner", width="stretch"):
                     res["wt"] = wt_res
 
             if df is not None:
-                res["vcs"] = scan_vcs(sym, df, indicators=ind)
-                res["structural_vcp"] = scan_structural_vcp(sym, df, indicators=ind)
                 res["vpa"] = scan_vpa_trend(sym, df, indicators=ind)
 
             return res
@@ -2400,15 +2056,9 @@ if st.sidebar.button("🔍 Run Scanner", width="stretch"):
                 if res.get("failed"):
                     failed_count += 1
                     continue
-                if res.get("gapup"): gapup_list.append(res["gapup"])
-                if res.get("above_ma"): above_ma_list.append(res["above_ma"])
-                if res.get("support_ma"): support_ma_list.append(res["support_ma"])
-                if res.get("crossover_ma"): crossover_ma_list.append(res["crossover_ma"])
                 if res.get("minervini"): minervini_list.append(res["minervini"])
                 if res.get("flagged"): flagged_list.append(res["flagged"])
                 if res.get("wt"): wt_list.append(res["wt"])
-                if res.get("vcs"): vcs_list.append(res["vcs"])
-                if res.get("structural_vcp"): structural_vcp_list.append(res["structural_vcp"])
                 if res.get("vpa"): vpa_list.append(res["vpa"])
             except Exception as exc:
                 print(f"Error processing result: {exc}")
@@ -2425,13 +2075,7 @@ if st.sidebar.button("🔍 Run Scanner", width="stretch"):
 
         # Cache results in state to allow seamless widget interactions
         st.session_state.scan_results = flagged_list
-        st.session_state.gapup_results = gapup_list
-        st.session_state.above_ma_results = above_ma_list
-        st.session_state.support_ma_results = support_ma_list
-        st.session_state.crossover_ma_results = crossover_ma_list
         st.session_state.minervini_results = minervini_list
-        st.session_state.vcs_results = vcs_list
-        st.session_state.structural_vcp_results = structural_vcp_list
         st.session_state.vpa_results = vpa_list
         st.session_state.wt_results = wt_list
         st.session_state.wt_results_by_tf = {"Daily_-40.0": wt_list, "Daily": wt_list}
@@ -2442,16 +2086,14 @@ if st.sidebar.button("🔍 Run Scanner", width="stretch"):
         # Save to database cache daily
         try:
             today_ist_str = get_market_date()
-            trend_setups_list = above_ma_list + support_ma_list + crossover_ma_list + minervini_list
             database.save_scan_results(
                 date_str=today_ist_str,
                 breakouts=flagged_list,
                 squeezes=[],
-                gapups=gapup_list,
-                trend_setups=trend_setups_list,
+                gapups=[],
+                trend_setups=minervini_list,
                 wt_cross=wt_list,
                 total_scanned=n_stocks,
-                vcs_results=vcs_list,
                 vpa_results=vpa_list
             )
             st.toast("💾 Today's scan results cached in Neon PostgreSQL!", icon="✅")
@@ -2530,8 +2172,6 @@ st.markdown("---")
 
 # Get scan cache (used by multiple tabs)
 scan_data = st.session_state.scan_results
-
-SHOW_REMOVED_TABS = False
 
 (tab_results, tab_detail, tab_watchlist, tab_ai,
  tab_wave, tab_minervini, tab_monthly, tab_weekly, tab_history,
@@ -3646,231 +3286,6 @@ with tab_ai:
 # ==============================================================================
 # TAB 6: GAP-UP SETUPS
 # ==============================================================================
-if SHOW_REMOVED_TABS:
-    with tab_gapup:
-        st.markdown("### 🚀 Daily Gap-Up Momentum Setups")
-        st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Scan for momentum setups opening higher than yesterday's close — price breaking out of overhead levels immediately upon market open.</p>", unsafe_allow_html=True)
-        st.markdown("---")
-
-        gapup_data = st.session_state.gapup_results
-
-        # 1. Premium Metrics Row
-        g_m1, g_m2, g_m3 = st.columns(3)
-
-        if gapup_data:
-            gapup_count = len(gapup_data)
-            max_gap = max(r['gap_pct'] for r in gapup_data)
-            avg_gap = sum(r['gap_pct'] for r in gapup_data) / gapup_count
-        else:
-            gapup_count = 0
-            max_gap = 0.0
-            avg_gap = 0.0
-
-        g_m1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Gap-Up Setups Found</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{gapup_count}</h3></div>', unsafe_allow_html=True)
-        g_m2.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Highest Gap-Up %</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">+{max_gap:.2f}%</h3></div>', unsafe_allow_html=True)
-        g_m3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Average Gap-Up %</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">+{avg_gap:.2f}%</h3></div>', unsafe_allow_html=True)
-
-        st.markdown("---")
-
-        # 2. Main Scan Table
-        if gapup_data is None:
-            st.info("💡 Run the scanner from the sidebar to identify live pre-market or intraday gap-up setups.")
-        elif len(gapup_data) == 0:
-            st.info("ℹ️ No gap-up setups found today matching the scanning criteria.")
-        else:
-            # Sort results descending by gap percent
-            sorted_gapup = sorted(gapup_data, key=lambda x: x['gap_pct'], reverse=True)
-
-            # Download results option
-            export_gapup = []
-            for r in sorted_gapup:
-                export_gapup.append({
-                    "Symbol": r['symbol'],
-                    "Sector": get_stock_sector(r['symbol']),
-                                    "Yesterday Close (₹)": r['prev_close'],
-                    "Today Open (₹)": r['open_price'],
-                    "CMP (₹)": r['cmp'],
-                    "Gap %": r['gap_pct'],
-                    "Day Change %": r['day_change_pct'],
-                    "Volume": r['volume'],
-                    "Buy Range (₹)": r.get('buy_price', r.get('cmp', 0)),
-                    "Stop Loss (₹)": r.get('exit_price', 0),
-                    "Target (₹)": r.get('target_price', 0),
-                    "Confidence": r.get('confidence', ''),
-                    "Recommendation": extract_clean_recommendation(r.get('recommendation', ''))
-                })
-            export_g_df = pd.DataFrame(export_gapup)
-            csv_g_data = export_g_df.to_csv(index=False).encode('utf-8-sig')
-
-            st.download_button(
-                label="📥 Download Gap-Up Setups (CSV)",
-                data=csv_g_data,
-                file_name=f"gapup_setups_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                key="dl_gapup_top_btn"
-            )
-
-            st.markdown("---")
-            # Render the unified Trade Execution Matrix
-            st.markdown("### 🚀 Active Gap-Up Momentum Trade Execution Sheet")
-            render_unified_strategy_table(sorted_gapup, "gapup", "gapup_tab")
-
-    # ==============================================================================
-    # TAB 7: ABOVE 20 & 50 SMA
-    # ==============================================================================
-    if SHOW_REMOVED_TABS:
-        with tab_sma:
-            st.markdown("### 📈 Stocks Trading Above 20 SMA & 50 SMA")
-            st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Identify stocks in a strong medium-term uptrend where price is trading comfortably above both their 20-day and 50-day Simple Moving Averages.</p>", unsafe_allow_html=True)
-            st.markdown("---")
-
-            above_ma_data = st.session_state.above_ma_results
-
-            if above_ma_data is None:
-                st.info("💡 Run the scanner from the sidebar to identify stocks trading above their 20 SMA and 50 SMA.")
-            elif len(above_ma_data) == 0:
-                st.info("ℹ️ No stocks found today matching the 20 & 50 SMA uptrend criteria.")
-            else:
-                # Sort by day change descending
-                sorted_above = sorted(above_ma_data, key=lambda x: x.get('day_change_pct', 0.0), reverse=True)
-
-                # Download results option
-                export_above = []
-                for r in sorted_above:
-                    export_above.append({
-                        "Symbol": r['symbol'],
-                        "Sector": get_stock_sector(r['symbol']),
-                                        "CMP (₹)": r['cmp'],
-                        "Day Change %": r['day_change_pct'],
-                        "Setup Type": r['setup_type'],
-                        "Dist to 20 SMA (%)": r.get('dist_20sma_pct', 0.0),
-                        "Dist to 50 SMA (%)": r.get('dist_50sma_pct', 0.0),
-                        "Suggested Buy (₹)": r['buy_price'],
-                        "Suggested Exit/SL (₹)": r['exit_price'],
-                        "Suggested Target (₹)": r['target_price'],
-                        "Confidence": r['confidence'],
-                        "Recommendation": extract_clean_recommendation(r.get('recommendation', ''))
-                    })
-                export_a_df = pd.DataFrame(export_above)
-                csv_a_data = export_a_df.to_csv(index=False).encode('utf-8-sig')
-
-                st.download_button(
-                    label="📥 Download Above 20/50 SMA Results (CSV)",
-                    data=csv_a_data,
-                    file_name=f"above_20_50_sma_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    key="dl_above_ma_btn"
-                )
-
-                st.markdown("---")
-                # Render the unified Trade Execution Matrix
-                st.markdown("### 📈 Active Uptrend Trade Execution Sheet")
-                render_unified_strategy_table(sorted_above, "above_ma", "above_ma_tab")
-
-        # ==============================================================================
-        # TAB 8: 65 SMA SUPPORT
-        # ==============================================================================
-        if SHOW_REMOVED_TABS:
-            with tab_sma65:
-                st.markdown("### 🛡️ Stocks Taking Support at 65 SMA")
-                st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Scan for institutional pullbacks where the price is testing or bouncing precisely off the 65-day Simple Moving Average (65 SMA), offering high-probability low-risk entries.</p>", unsafe_allow_html=True)
-                st.markdown("---")
-
-                support_ma_data = st.session_state.support_ma_results
-
-                if support_ma_data is None:
-                    st.info("💡 Run the scanner from the sidebar to identify stocks taking support at their 65 SMA.")
-                elif len(support_ma_data) == 0:
-                    st.info("ℹ️ No stocks found today taking support at their 65 SMA.")
-                else:
-                    # Sort by day change descending
-                    sorted_support = sorted(support_ma_data, key=lambda x: x.get('day_change_pct', 0.0), reverse=True)
-
-                    # Download results option
-                    export_support = []
-                    for r in sorted_support:
-                        export_support.append({
-                            "Symbol": r['symbol'],
-                            "Sector": get_stock_sector(r['symbol']),
-                                            "CMP (₹)": r['cmp'],
-                            "Day Change %": r['day_change_pct'],
-                            "Setup Type": r['setup_type'],
-                            "Dist to 65 SMA (%)": r.get('dist_65sma_pct', 0.0),
-                            "Suggested Buy (₹)": r['buy_price'],
-                            "Suggested Exit/SL (₹)": r['exit_price'],
-                            "Suggested Target (₹)": r['target_price'],
-                            "Confidence": r['confidence'],
-                            "Recommendation": extract_clean_recommendation(r.get('recommendation', ''))
-                        })
-                    export_s_df = pd.DataFrame(export_support)
-                    csv_s_data = export_s_df.to_csv(index=False).encode('utf-8-sig')
-
-                    st.download_button(
-                        label="📥 Download 65 SMA Support Results (CSV)",
-                        data=csv_s_data,
-                        file_name=f"65_sma_support_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv",
-                        key="dl_support_ma_btn"
-                    )
-
-                    st.markdown("---")
-                    # Render the unified Trade Execution Matrix
-                    st.markdown("### 🛡️ Active 65 SMA Support Trade Execution Sheet")
-                    render_unified_strategy_table(sorted_support, "support_ma", "support_ma_tab")
-
-            # ==============================================================================
-            # TAB 9: MA CROSSOVERS
-            # ==============================================================================
-            if SHOW_REMOVED_TABS:
-                with tab_macross:
-                    st.markdown("### 🔄 Moving Average Crossover Signals")
-                    st.markdown("<p style='font-size:0.9rem; color:#94a3b8;'>Identify stocks triggering critical trend reversal crossovers (50 SMA crossing 150/200 SMA, or price crossing above 50/150/200 SMA) in the latest session.</p>", unsafe_allow_html=True)
-                    st.markdown("---")
-
-                    crossover_ma_data = st.session_state.crossover_ma_results
-
-                    if crossover_ma_data is None:
-                        st.info("💡 Run the scanner from the sidebar to identify moving average crossover signals.")
-                    elif len(crossover_ma_data) == 0:
-                        st.info("ℹ️ No stocks found triggering moving average crossover signals in this session.")
-                    else:
-                        # Sort by day change descending
-                        sorted_crossover = sorted(crossover_ma_data, key=lambda x: x.get('day_change_pct', 0.0), reverse=True)
-
-                        # Download results option
-                        export_crossover = []
-                        for r in sorted_crossover:
-                            export_crossover.append({
-                                "Symbol": r['symbol'],
-                                "Sector": get_stock_sector(r['symbol']),
-                                                "CMP (₹)": r['cmp'],
-                                "Day Change %": r['day_change_pct'],
-                                "Setup Type": r['setup_type'],
-                                "Suggested Buy (₹)": r['buy_price'],
-                                "Suggested Exit/SL (₹)": r['exit_price'],
-                                "Suggested Target (₹)": r['target_price'],
-                                "Confidence": r['confidence'],
-                                "Recommendation": extract_clean_recommendation(r.get('recommendation', ''))
-                            })
-                        export_x_df = pd.DataFrame(export_crossover)
-                        csv_x_data = export_x_df.to_csv(index=False).encode('utf-8-sig')
-
-                        st.download_button(
-                            label="📥 Download MA Crossover Results (CSV)",
-                            data=csv_x_data,
-                            file_name=f"ma_crossover_signals_{datetime.now(IST_TIMEZONE).strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv",
-                            key="dl_crossover_ma_btn"
-                        )
-
-                        st.markdown("---")
-                        # Render the unified Trade Execution Matrix
-                        st.markdown("### 🔄 Active MA Crossover Trade Execution Sheet")
-                        render_unified_strategy_table(sorted_crossover, "crossover_ma", "crossover_ma_tab")
-
-                # ==============================================================================
-                # TAB 10: WAVE TREND (LazyBear)
-                # ==============================================================================
 with tab_wave:
     # 0. Timeframe & Threshold selector inside tab
     wt_col1, wt_col2 = st.columns(2)
@@ -4384,12 +3799,8 @@ with tab_history:
         st.markdown("<br>", unsafe_allow_html=True)
 
         # Nested sub-tabs inside History tab
-        sub_breakout, sub_gapup, sub_above_ma, sub_support_ma, sub_crossover_ma, sub_wt, sub_vp = st.tabs([
+        sub_breakout, sub_wt, sub_vp = st.tabs([
             "📊 VDU Breakouts",
-            "🚀 Gap-Ups",
-            "📈 Above 20 & 50 SMA",
-            "🛡️ 65 SMA Support",
-            "🔄 MA Crossovers",
             "🌊 Wave Trend",
             "📊 Volume Profile"
         ])
@@ -4405,47 +3816,7 @@ with tab_history:
                 render_unified_strategy_table(sorted_hb, "vdu_breakout", f"hist_bo_{selected_date_str}")
 
 
-        # 2. Historical Gap-Ups
-        with sub_gapup:
-            h_gapups = database.get_cached_gapups(selected_date_str)
-            if not h_gapups:
-                st.info(f"ℹ️ No Gap-Ups were recorded on {selected_date_str}.")
-            else:
-                sorted_hgu = sorted(h_gapups, key=lambda x: x.get('gap_pct', 0.0), reverse=True)
-                st.markdown(f"**🚀 Gap-Up Setups on {selected_date_str} ({len(sorted_hgu)})**")
-                render_unified_strategy_table(sorted_hgu, "gapup", f"hist_gu_{selected_date_str}")
-
-        # 4. Historical Above 20 & 50 SMA
-        with sub_above_ma:
-            h_above_ma = database.get_cached_trend_setups(selected_date_str, 'above_ma')
-            if not h_above_ma:
-                st.info(f"ℹ️ No Above SMA trend setups were recorded on {selected_date_str}.")
-            else:
-                sorted_ham = sorted(h_above_ma, key=lambda x: x.get('day_change_pct', 0.0), reverse=True)
-                st.markdown(f"**📈 Above 20 & 50 SMA on {selected_date_str} ({len(sorted_ham)})**")
-                render_unified_strategy_table(sorted_ham, "above_ma", f"hist_above_{selected_date_str}")
-
-        # 5. Historical 65 SMA Support
-        with sub_support_ma:
-            h_support_ma = database.get_cached_trend_setups(selected_date_str, 'support_ma')
-            if not h_support_ma:
-                st.info(f"ℹ️ No 65 SMA Pullback setups were recorded on {selected_date_str}.")
-            else:
-                sorted_hsm = sorted(h_support_ma, key=lambda x: x.get('day_change_pct', 0.0), reverse=True)
-                st.markdown(f"**🛡️ 65 SMA Support Pullbacks on {selected_date_str} ({len(sorted_hsm)})**")
-                render_unified_strategy_table(sorted_hsm, "support_ma", f"hist_support_{selected_date_str}")
-
-        # 6. Historical MA Crossovers
-        with sub_crossover_ma:
-            h_crossovers = database.get_cached_trend_setups(selected_date_str, 'crossover_ma')
-            if not h_crossovers:
-                st.info(f"ℹ️ No MA Crossover breakouts were recorded on {selected_date_str}.")
-            else:
-                sorted_hco = sorted(h_crossovers, key=lambda x: x.get('day_change_pct', 0.0), reverse=True)
-                st.markdown(f"**🔄 MA Crossovers on {selected_date_str} ({len(sorted_hco)})**")
-                render_unified_strategy_table(sorted_hco, "crossover_ma", f"hist_cross_{selected_date_str}")
-
-        # 7. Historical WaveTrend
+        # 2. Historical WaveTrend
         with sub_wt:
             h_wt = database.get_cached_wt_cross(selected_date_str)
             if not h_wt:
@@ -5114,207 +4485,8 @@ with tab_weekly:
 
 
 # ==============================================================================
-# TAB VCS: VOLATILITY CONTRACTION SCANNER
+# TAB: STAGE 2
 # ==============================================================================
-if SHOW_REMOVED_TABS:
-    with tab_vcs:
-        st.markdown("### 📉 Volatility Contraction Scanner (VCS)")
-        st.markdown("Identifies stocks with tightening ATR, Standard Deviation, and Volume contraction.")
-        st.markdown("---")
-
-        # 1. Metrics row
-        v_m1, v_m2, v_m3 = st.columns(3)
-
-        # Pick up background scan results if available
-        if not st.session_state.get('vcs_results') and ALL_TAB_SCAN_STATUS["vcs_results"] is not None:
-            st.session_state.vcs_results = ALL_TAB_SCAN_STATUS["vcs_results"]
-
-        vcs_data = st.session_state.get('vcs_results', None)
-        if vcs_data:
-            vcs_count = len(vcs_data)
-            min_vcs_score = min(r['vcs_score'] for r in vcs_data) if vcs_count > 0 else 0.0
-            avg_vcs_score = sum(r['vcs_score'] for r in vcs_data) / vcs_count if vcs_count > 0 else 0.0
-        else:
-            vcs_count = 0
-            min_vcs_score = 0.0
-            avg_vcs_score = 0.0
-
-        v_m1.markdown(f'<div class="glass-card metric-glow-blue"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">VCS Setups Found</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#29b6f6;">{vcs_count}</h3></div>', unsafe_allow_html=True)
-        v_m2.markdown(f'<div class="glass-card metric-glow-green"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Tightest Volatility Score</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#00e676;">{min_vcs_score:.2f}</h3></div>', unsafe_allow_html=True)
-        v_m3.markdown(f'<div class="glass-card metric-glow-amber"><p style="font-size:0.85rem; color:#94a3b8; margin:0;">Avg VCS Rating</p><h3 style="font-size:1.8rem; margin:5px 0 0 0; color:#ffa000;">{avg_vcs_score:.1f} <span style="font-size: 1.1rem; color: #94a3b8;">pts</span></h3></div>', unsafe_allow_html=True)
-
-        st.markdown("---")
-        st.markdown("#### Scanner Parameters")
-        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-        with col1:
-            vcs_timeframe = st.selectbox("Timeframe", ["Daily (1d)", "Weekly (1wk)"], index=0)
-        with col2:
-            vcs_min_price_chg = st.number_input("Min % Chg", min_value=-50.0, max_value=100.0, value=-5.0, step=0.5)
-        with col3:
-            vcs_len_short = st.number_input("Short ATR Len", min_value=1, max_value=100, value=13)
-        with col4:
-            vcs_len_long = st.number_input("Long ATR Len", min_value=1, max_value=200, value=63)
-        with col5:
-            vcs_len_vol = st.number_input("Volume Len", min_value=1, max_value=200, value=50)
-        with col6:
-            vcs_sensitivity = st.number_input("Sensitivity", min_value=0.1, max_value=10.0, value=2.0, step=0.1)
-        with col7:
-            vcs_max_score = st.number_input("Max Score Limit", min_value=1.0, max_value=100.0, value=10.0, step=1.0)
-
-        run_vcs_btn = st.button("🔍 Run Custom VCS Scan", width="stretch", type="primary")
-
-        if run_vcs_btn:
-            vcs_interval = "1wk" if "Weekly" in vcs_timeframe else "1d"
-            vcs_period = "5y" if vcs_interval == "1wk" else "1y"
-            with st.spinner(f"Running custom VCS scan... downloading {vcs_timeframe} data..."):
-                if "NIFTY 50" in universe_selection:
-                    universe_key = "NIFTY 50"
-                elif "NIFTY 100" in universe_selection:
-                    universe_key = "NIFTY 100"
-                elif "WATCHLIST" in universe_selection.upper():
-                    universe_key = "WATCHLIST"
-                else:
-                    universe_key = "ALL NSE"
-
-                if universe_key == "WATCHLIST":
-                    import watchlist
-                    wl = watchlist.load_watchlist()
-                    custom_candidates = [s for s in wl['symbol'].tolist() if pd.notna(s)]
-                else:
-                    custom_candidates = get_index_stocks(universe_key)
-
-                custom_vcs_results = []
-                chunk_size = 50
-                chunks = [custom_candidates[i:i+chunk_size] for i in range(0, len(custom_candidates), chunk_size)]
-
-                for c_idx, chunk in enumerate(chunks):
-                    tkrs = [f"{s}.NS" for s in chunk]
-                    try:
-                        df_vcs = yf.download(tickers=tkrs, period=vcs_period, interval=vcs_interval, progress=False, threads=False)
-                        if not df_vcs.empty:
-                            for sym in chunk:
-                                try:
-                                    if isinstance(df_vcs.columns, pd.MultiIndex):
-                                        all_tkrs = df_vcs.columns.get_level_values(1).unique().tolist()
-                                        matched_t = next((t for t in all_tkrs if t.upper() == f"{sym}.NS".upper()), None)
-                                        if not matched_t:
-                                            continue
-                                        t_df = df_vcs.xs(matched_t, axis=1, level=1).dropna(subset=['Close'])
-                                    else:
-                                        t_df = df_vcs.dropna(subset=['Close'])
-
-                                    if not t_df.empty and len(t_df) >= vcs_len_long:
-                                        t_df = t_df.reset_index()
-                                        t_df.rename(columns={t_df.columns[0]: 'Date'}, inplace=True)
-                                        res = scan_vcs(sym, t_df,
-                                                       lenShort=vcs_len_short,
-                                                       lenLong=vcs_len_long,
-                                                       lenVol=vcs_len_vol,
-                                                       sensitivity=vcs_sensitivity,
-                                                       max_score=vcs_max_score)
-                                        if res:
-                                            if res.get('day_change_pct', 0.0) >= vcs_min_price_chg:
-                                                res['Timeframe'] = vcs_timeframe
-                                                res['Action'] = res.get('recommendation', 'Wait')
-                                                custom_vcs_results.append(res)
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-
-                st.session_state.vcs_results = custom_vcs_results
-                try:
-                    today_ist_str = get_market_date()
-                    database.save_vcs_only(today_ist_str, custom_vcs_results)
-                except Exception as e:
-                    print(f"Failed to cache custom VCS scan: {e}")
-                if len(custom_vcs_results) > 0:
-                    st.success(f"Custom VCS Scan Complete! Found {len(custom_vcs_results)} stocks and saved to database.")
-
-        st.markdown("---")
-
-        if st.session_state.vcs_results is None:
-            # Background scan progress indicator
-            if ALL_TAB_SCAN_STATUS["is_running"]:
-                _bg_scanner = ALL_TAB_SCAN_STATUS["current_scanner"]
-                _bg_status = ALL_TAB_SCAN_STATUS["status_text"]
-                _bg_progress = ALL_TAB_SCAN_STATUS["progress"]
-                st.markdown(f"""
-                <div class="glass-card" style="padding:22px; border:1px solid rgba(0,229,255,0.25); background:rgba(9,13,22,0.6); border-radius:12px; margin-bottom:20px; box-shadow:0 8px 32px 0 rgba(0,0,0,0.37);">
-                    <h4 style="color:#00e5ff; margin:0 0 10px 0; display:flex; align-items:center; gap:8px;">
-                        <span style="display:inline-block; animation: spin 2s linear infinite;">🔄</span> Background All-Tab Scan Active...
-                    </h4>
-                    <p style="font-size:0.9rem; color:#94a3b8; margin:0 0 15px 0;">All scanners are running automatically in the background. VCS results will appear here when ready!</p>
-                    <div style="font-size:0.85rem; color:#e2e8f0; font-weight:600; margin-bottom:8px;">Current: <span style="color:#00e5ff;">{_bg_status}</span></div>
-                </div>
-                <style>@keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}</style>
-                """, unsafe_allow_html=True)
-                st.progress(_bg_progress)
-                if st.button("🔄 Refresh Scanner Status", key="refresh_bg_vcs_status_btn"):
-                    st.rerun()
-
-            st.info("💡 Adjust parameters above and click 'Run Custom VCS Scan' to find setups, or run the global scanner from the sidebar.")
-        elif len(st.session_state.vcs_results) == 0:
-            st.info(f"ℹ️ No VCS setups found with a score < {vcs_max_score} today.")
-        else:
-            col_btn, _ = st.columns([2, 8])
-            with col_btn:
-                v_export_list = []
-                for r in st.session_state.vcs_results:
-                    row = dict(r)
-                    if 'recommendation' in row:
-                        row['Recommendation'] = extract_clean_recommendation(row.pop('recommendation'))
-                    v_export_list.append(row)
-                vcs_df = pd.DataFrame(v_export_list)
-                csv_data = vcs_df.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(
-                    label="⬇️ Download CSV",
-                    data=csv_data,
-                    file_name="vcs_scan_results.csv",
-                    mime="text/csv",
-                    width="stretch"
-                )
-            render_unified_strategy_table(st.session_state.vcs_results, "vcs", "vcs_tab")
-
-    # ==============================================================================
-    # TAB: STRUCTURAL VCP
-    # ==============================================================================
-    if SHOW_REMOVED_TABS:
-        with tab_vcp:
-            st.markdown("### 🎯 Structural Volatility Contraction Pattern (VCP)")
-            st.markdown("Hunts for textbook VCP patterns: Flat-top resistance, successive higher lows (tightening), and extreme volume dry-up on the right side.")
-
-            if st.session_state.structural_vcp_results is None:
-                st.info("💡 Run the main scanner from the sidebar to populate Structural VCP setups.")
-            elif len(st.session_state.structural_vcp_results) == 0:
-                st.info("ℹ️ No textbook Structural VCP setups found today.")
-            else:
-                vcp_count = len(st.session_state.structural_vcp_results)
-                st.success(f"Found {vcp_count} Structural VCP setups!")
-
-                col_btn, _ = st.columns([2, 8])
-                with col_btn:
-                    sv_export_list = []
-                    for r in st.session_state.structural_vcp_results:
-                        row = dict(r)
-                        if 'recommendation' in row:
-                            row['Recommendation'] = extract_clean_recommendation(row.pop('recommendation'))
-                        sv_export_list.append(row)
-                    sv_df = pd.DataFrame(sv_export_list)
-                    sv_csv = sv_df.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button(
-                        label="⬇️ Download CSV",
-                        data=sv_csv,
-                        file_name="structural_vcp_results.csv",
-                        mime="text/csv",
-                        width="stretch"
-                    )
-
-                render_unified_strategy_table(st.session_state.structural_vcp_results, "struct_vcp", "struct_vcp_tab")
-
-        # ==============================================================================
-        # TAB: EARLY STAGE 2 BREAKOUT
-        # ==============================================================================
 with tab_stage2:
     st.markdown("### 🚀 Early Stage 2 Base Breakout Scanner")
     st.markdown("Identifies stocks moving out of a long-term Stage 1 base on the monthly timeframe.")
@@ -6809,208 +5981,3 @@ with tab_rsi_wt:
 # ==============================================================================
 # TAB: BB SQUEEZE
 # ==============================================================================
-if SHOW_REMOVED_TABS:
-    with tab_bb_squeeze:
-        st.markdown("### 💥 Bollinger Band Squeeze (Upward Blast Setups)")
-        st.markdown("Stocks in a severe volatility squeeze (tight Bollinger Bands), indicating they may blast upward soon.")
-        col_btn, col_note = st.columns([1, 2])
-        run_bb_btn = col_btn.button("🔍 Run BB Squeeze Scan", type="primary", use_container_width=True)
-        col_note.info("ℹ️ Re-run the scan to see **Score** and **Confidence** columns (new feature).")
-
-        if run_bb_btn:
-            st.session_state.bb_squeeze_results = None
-            ALL_TAB_SCAN_STATUS["bb_squeeze_results"] = None
-            run_background_bb_squeeze_scan(force=True)
-            st.rerun()
-
-        # Pick up background scan results if available
-        if st.session_state.get('bb_squeeze_results') is None and ALL_TAB_SCAN_STATUS.get("bb_squeeze_results") is not None:
-            st.session_state.bb_squeeze_results = ALL_TAB_SCAN_STATUS["bb_squeeze_results"]
-
-        if st.session_state.get('bb_squeeze_results') is not None:
-            bb_list = st.session_state.bb_squeeze_results
-
-            # Apply Universe Filter
-            if "ALL NSE" not in universe_selection.upper() and len(bb_list) > 0:
-                from data_fetcher import get_index_stocks
-                resolved_univ = "ALL NSE"
-                if "NIFTY 500" in universe_selection: resolved_univ = "NIFTY 500"
-                elif "NIFTY 100" in universe_selection: resolved_univ = "NIFTY 100"
-                elif "NIFTY 50" in universe_selection: resolved_univ = "NIFTY 50"
-                elif "WATCHLIST" in universe_selection.upper(): resolved_univ = "WATCHLIST"
-                if resolved_univ != "ALL NSE":
-                    raw_symbols = get_index_stocks(resolved_univ)
-                    valid_set = set([str(s).replace('.NS', '').strip().upper() for s in raw_symbols if str(s).strip()])
-                    bb_list = [r for r in bb_list if r['symbol'] in valid_set]
-
-            if len(bb_list) > 0:
-                # Sort by squeeze_score (desc), fallback to timeframe count
-                bb_list.sort(key=lambda r: (r.get('squeeze_score', 0),
-                                             r.get('monthly_squeeze', False),
-                                             r.get('weekly_squeeze', False),
-                                             r.get('daily_squeeze', False)), reverse=True)
-
-                df_bb = pd.DataFrame(bb_list)
-                has_score = 'squeeze_score' in df_bb.columns
-
-                # ── Helper: build clean export df for a timeframe ──────────────────
-                def _build_tf_df(df_src, tf_squeeze_col, tf_width_col, tf_label):
-                    """Filter to rows where tf_squeeze_col=True and format for display/export."""
-                    df_tf = df_src[df_src[tf_squeeze_col] == True].copy()
-                    if df_tf.empty:
-                        return df_tf
-
-                    if has_score:
-                        df_tf['squeeze_score'] = pd.to_numeric(df_tf['squeeze_score'], errors='coerce').fillna(0).astype(int)
-                        df_tf = df_tf.sort_values('squeeze_score', ascending=False)
-                    else:
-                        df_tf = df_tf.sort_values(tf_squeeze_col, ascending=False)
-
-                    out = pd.DataFrame()
-                    out['Symbol']       = df_tf['symbol'].values
-                    out['Company']      = df_tf['company_name'].values if 'company_name' in df_tf.columns else ''
-                    out['CMP (₹)']      = df_tf['cmp'].round(2).values
-                    out['Change (%)']   = df_tf['day_change_pct'].round(2).values
-                    if has_score:
-                        out['Score']        = df_tf['squeeze_score'].apply(lambda x: f"{int(x)}/100" if pd.notna(x) and x > 0 else '—')
-                        out['Confidence']   = df_tf['confidence'].fillna('—').values if 'confidence' in df_tf.columns else '—'
-                    out['BB Width']     = df_tf[tf_width_col].round(4).values if tf_width_col in df_tf.columns else '—'
-                    out['Above 50 DMA'] = df_tf['above_50dma'].map({True: 'Yes', False: 'No'}).values if 'above_50dma' in df_tf.columns else '—'
-                    if has_score and 'score_breakdown' in df_tf.columns:
-                        out['Score Breakdown'] = df_tf['score_breakdown'].fillna('').values
-                    return out
-
-
-                df_daily_tf   = _build_tf_df(df_bb, 'daily_squeeze',   'daily_bb_width',   'Daily')
-                df_weekly_tf  = _build_tf_df(df_bb, 'weekly_squeeze',  'weekly_bb_width',  'Weekly')
-                df_monthly_tf = _build_tf_df(df_bb, 'monthly_squeeze', 'monthly_bb_width', 'Monthly')
-
-                # ── Summary metrics row ─────────────────────────────────────────────
-                total  = len(df_bb)
-                d_sq   = len(df_daily_tf)
-                w_sq   = len(df_weekly_tf)
-                m_sq   = len(df_monthly_tf)
-                triple = int(((df_bb['daily_squeeze']) & (df_bb['weekly_squeeze']) & (df_bb['monthly_squeeze'])).sum())
-                avg_sc = int(pd.to_numeric(df_bb['squeeze_score'], errors='coerce').fillna(0).mean()) if has_score else 0
-
-                mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
-                mc1.metric("Total Setups", total)
-                mc2.metric("📅 Daily Only", d_sq)
-                mc3.metric("📈 Weekly Only", w_sq)
-                mc4.metric("📅 Monthly Only", m_sq)
-                mc5.metric("🔥 Triple Squeeze", triple)
-                mc6.metric("Avg Score", f"{avg_sc}/100" if has_score else "Re-run scan")
-
-                st.markdown("---")
-
-                # ── Multi-sheet Excel download ──────────────────────────────────────
-                import io
-                excel_buf = io.BytesIO()
-                with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
-                    if not df_daily_tf.empty:
-                        df_daily_tf.to_excel(writer, sheet_name='Daily Squeeze', index=False)
-                    if not df_weekly_tf.empty:
-                        df_weekly_tf.to_excel(writer, sheet_name='Weekly Squeeze', index=False)
-                    if not df_monthly_tf.empty:
-                        df_monthly_tf.to_excel(writer, sheet_name='Monthly Squeeze', index=False)
-                    # All combined on last sheet
-                    df_all_export = _build_tf_df(df_bb, 'daily_squeeze', 'daily_bb_width', 'All')
-                    # rebuild all as combined
-                    all_rows = []
-                    for r in bb_list:
-                        row = {
-                            'Symbol':       r.get('symbol',''),
-                            'Company':      r.get('company_name',''),
-                            'CMP (₹)':      r.get('cmp', 0),
-                            'Change (%)':   r.get('day_change_pct', 0),
-                            'Daily Squeeze': 'YES' if r.get('daily_squeeze') else '',
-                            'D Width':      r.get('daily_bb_width', ''),
-                            'Weekly Squeeze': 'YES' if r.get('weekly_squeeze') else '',
-                            'W Width':      r.get('weekly_bb_width', ''),
-                            'Monthly Squeeze': 'YES' if r.get('monthly_squeeze') else '',
-                            'M Width':      r.get('monthly_bb_width', ''),
-                            'Above 50 DMA': 'Yes' if r.get('above_50dma') else 'No',
-                        }
-                        if has_score:
-                            row['Score']           = r.get('squeeze_score', '')
-                            row['Confidence']      = r.get('confidence', '')
-                            row['Score Breakdown'] = r.get('score_breakdown', '')
-                        all_rows.append(row)
-                    pd.DataFrame(all_rows).to_excel(writer, sheet_name='All Squeezes', index=False)
-                excel_buf.seek(0)
-
-                from datetime import date
-                fname = f"BB_Squeeze_{date.today().strftime('%Y%m%d')}.xlsx"
-                st.download_button(
-                    label="📥 Download Excel (4 sheets: Daily | Weekly | Monthly | All)",
-                    data=excel_buf.getvalue(),
-                    file_name=fname,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-
-                st.markdown("---")
-
-                # ── Separate Sub-tabs per timeframe ────────────────────────────────
-                stab_d, stab_w, stab_m, stab_all = st.tabs([
-                    f"📅 Daily Squeeze ({d_sq})",
-                    f"📈 Weekly Squeeze ({w_sq})",
-                    f"📅 Monthly Squeeze ({m_sq})",
-                    f"📊 All Combined ({total})"
-                ])
-
-                def _render_tf_table(df_tf, label):
-                    if df_tf.empty:
-                        st.info(f"No {label} squeeze setups found.")
-                        return
-                    st.dataframe(df_tf, use_container_width=True, hide_index=True)
-
-                with stab_d:
-                    st.markdown(f"**{d_sq} stocks** currently in a **Daily Bollinger Band Squeeze**")
-                    _render_tf_table(df_daily_tf, "Daily")
-
-                with stab_w:
-                    st.markdown(f"**{w_sq} stocks** currently in a **Weekly Bollinger Band Squeeze**")
-                    _render_tf_table(df_weekly_tf, "Weekly")
-
-                with stab_m:
-                    st.markdown(f"**{m_sq} stocks** currently in a **Monthly Bollinger Band Squeeze**")
-                    _render_tf_table(df_monthly_tf, "Monthly")
-
-                with stab_all:
-                    st.markdown(f"**{total} stocks** with at least one active squeeze (sorted by score)")
-                    # Build display df for combined view
-                    disp = pd.DataFrame()
-                    disp['Symbol']    = df_bb['symbol']
-                    disp['Company']   = df_bb.get('company_name', '')
-                    disp['CMP']       = df_bb['cmp'].apply(lambda x: f"₹{x:,.2f}")
-                    disp['Change']    = df_bb['day_change_pct'].apply(lambda x: f"{x:+.2f}%")
-                    if has_score:
-                        disp['Score']      = df_bb['squeeze_score'].apply(lambda x: f"{x}/100")
-                        disp['Confidence'] = df_bb.get('confidence', '—')
-                    disp['Above 50D']  = df_bb['above_50dma'].map({True: '✅', False: '❌'}) if 'above_50dma' in df_bb.columns else '—'
-                    disp['Daily']      = df_bb['daily_squeeze'].map({True: '🟢', False: '⚪'})
-                    disp['D Width']    = df_bb['daily_bb_width'].apply(lambda x: f"{x:.4f}" if x else '—') if 'daily_bb_width' in df_bb.columns else '—'
-                    disp['Weekly']     = df_bb['weekly_squeeze'].map({True: '🟢', False: '⚪'})
-                    disp['W Width']    = df_bb['weekly_bb_width'].apply(lambda x: f"{x:.4f}" if x else '—') if 'weekly_bb_width' in df_bb.columns else '—'
-                    disp['Monthly']    = df_bb['monthly_squeeze'].map({True: '🟢', False: '⚪'})
-                    disp['M Width']    = df_bb['monthly_bb_width'].apply(lambda x: f"{x:.4f}" if x else '—') if 'monthly_bb_width' in df_bb.columns else '—'
-                    if has_score and 'score_breakdown' in df_bb.columns:
-                        disp['Why'] = df_bb['score_breakdown']
-                    st.dataframe(disp, use_container_width=True, hide_index=True)
-
-            else:
-                if st.session_state.get("bb_squeeze_running", False) or ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
-                    st.info("⏳ Background scanner is analyzing BB Squeezes across Daily, Weekly, and Monthly timeframes... Please wait (~2 minutes).")
-                    if st.button("🔄 Refresh BB Squeeze Status", key="refresh_bb_running_btn"):
-                        st.rerun()
-                else:
-                    st.info("✅ Scan completed — no BB Squeeze setups found for the selected universe.")
-        else:
-            if st.session_state.get("bb_squeeze_running", False) or ALL_TAB_SCAN_STATUS.get("bb_squeeze_running", False):
-                st.info("⏳ Background scanner is analyzing BB Squeezes across Daily, Weekly, and Monthly timeframes... Please wait (~2 minutes).")
-                if st.button("🔄 Refresh BB Squeeze Status", key="refresh_bb_none_btn"):
-                    st.rerun()
-            else:
-                st.warning("⚠️ Scan has not been run yet. Click **'Run BB Squeeze Scan'** above to start, or enable **Auto-Background Scans** in the sidebar.")
-
